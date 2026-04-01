@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
-import { Loader2Icon, XIcon, ZapIcon, CopyIcon, CheckIcon } from 'lucide-react';
+import { Loader2Icon, XIcon, ZapIcon, CopyIcon, CheckIcon, ChevronDownIcon } from 'lucide-react';
 import { toastError, toastSuccess, truncateMintUrl } from '@/lib/utils';
 import { createMintQuote, checkMintQuote, mintTokens } from '@/cashu/wallet-ops';
+import { QRCodeDisplay } from '@/components/qr-code';
 import type { Mint } from '@/hooks/use-wallet';
 import type { Proof } from '@cashu/cashu-ts';
 import type { TransactionData } from '@/protocol/cashu-wallet-protocol';
@@ -14,6 +15,62 @@ interface DepositDialogProps {
 }
 
 type Step = 'amount' | 'invoice' | 'waiting' | 'done' | 'error';
+
+/** Invoice display with QR code + copy button */
+const InvoiceStep: React.FC<{
+  amount: string;
+  invoice: string;
+  onCopy: () => void;
+  copied: boolean;
+}> = ({ amount, invoice, onCopy, copied }) => {
+  const [showRaw, setShowRaw] = useState(false);
+
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-muted-foreground text-center">
+        Scan or copy this invoice to deposit <span className="font-medium text-foreground">{amount} sats</span>
+      </p>
+
+      {/* QR Code */}
+      <QRCodeDisplay
+        value={invoice}
+        size={220}
+        className="py-2"
+      />
+
+      {/* Copy button */}
+      <button
+        onClick={onCopy}
+        className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-border text-sm font-medium hover:bg-muted transition-colors"
+      >
+        {copied ? <CheckIcon className="h-4 w-4" /> : <CopyIcon className="h-4 w-4" />}
+        {copied ? 'Copied' : 'Copy Invoice'}
+      </button>
+
+      {/* Collapsible raw invoice */}
+      <button
+        onClick={() => setShowRaw(!showRaw)}
+        className="w-full flex items-center justify-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+      >
+        <ChevronDownIcon className={`h-3 w-3 transition-transform ${showRaw ? 'rotate-180' : ''}`} />
+        {showRaw ? 'Hide' : 'Show'} invoice text
+      </button>
+      {showRaw && (
+        <div className="p-3 rounded-lg bg-background border border-border max-h-20 overflow-y-auto">
+          <div className="token-string text-muted-foreground break-all">
+            {invoice}
+          </div>
+        </div>
+      )}
+
+      {/* Waiting indicator */}
+      <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
+        <Loader2Icon className="h-3 w-3 animate-spin" />
+        Waiting for payment...
+      </div>
+    </div>
+  );
+};
 
 export const DepositDialog: React.FC<DepositDialogProps> = ({
   mints,
@@ -176,27 +233,12 @@ export const DepositDialog: React.FC<DepositDialogProps> = ({
         )}
 
         {step === 'invoice' && (
-          <div className="space-y-4">
-            <p className="text-xs text-muted-foreground">
-              Pay this Lightning invoice to deposit {amount} sats:
-            </p>
-            <div className="p-3 rounded-lg bg-background border border-border">
-              <div className="token-string text-muted-foreground break-all">
-                {invoice}
-              </div>
-            </div>
-            <button
-              onClick={handleCopyInvoice}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-border text-sm font-medium hover:bg-muted transition-colors"
-            >
-              {copied ? <CheckIcon className="h-4 w-4" /> : <CopyIcon className="h-4 w-4" />}
-              {copied ? 'Copied' : 'Copy Invoice'}
-            </button>
-            <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
-              <Loader2Icon className="h-3 w-3 animate-spin" />
-              Waiting for payment...
-            </div>
-          </div>
+          <InvoiceStep
+            amount={amount}
+            invoice={invoice}
+            onCopy={handleCopyInvoice}
+            copied={copied}
+          />
         )}
 
         {step === 'waiting' && (

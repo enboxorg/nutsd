@@ -1,8 +1,9 @@
-import { useState } from 'react';
-import { Loader2Icon, XIcon, DownloadIcon } from 'lucide-react';
-import { toastError, toastSuccess } from '@/lib/utils';
-import { receiveToken } from '@/cashu/wallet-ops';
+import { useState, useEffect, useRef } from 'react';
+import { Loader2Icon, XIcon, DownloadIcon, ZapIcon, CopyIcon, CheckIcon, ChevronDownIcon } from 'lucide-react';
+import { toastError, toastSuccess, truncateMintUrl } from '@/lib/utils';
+import { receiveToken, createMintQuote, checkMintQuote, mintTokens } from '@/cashu/wallet-ops';
 import { extractMintUrl, isCashuToken } from '@/cashu/token-utils';
+import { QRCodeDisplay } from '@/components/qr-code';
 import type { Mint } from '@/hooks/use-wallet';
 import type { Proof } from '@cashu/cashu-ts';
 import type { TransactionData } from '@/protocol/cashu-wallet-protocol';
@@ -14,12 +15,82 @@ interface ReceiveDialogProps {
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<void>;
 }
 
+type Tab = 'token' | 'lightning';
+
 export const ReceiveDialog: React.FC<ReceiveDialogProps> = ({
   mints,
   onClose,
   onProofsReceived,
   onTransactionCreated,
 }) => {
+  const [tab, setTab] = useState<Tab>('token');
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="bg-card border border-border p-6 rounded-xl shadow-xl max-w-sm w-full space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <DownloadIcon className="h-5 w-5 text-[var(--color-info)]" />
+            <h3 className="text-lg font-semibold">Receive</h3>
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
+            <XIcon className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Tab selector */}
+        <div className="flex rounded-lg bg-muted p-0.5">
+          <button
+            onClick={() => setTab('token')}
+            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              tab === 'token' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            Ecash Token
+          </button>
+          <button
+            onClick={() => setTab('lightning')}
+            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              tab === 'lightning' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <ZapIcon className="h-3 w-3" />
+            Lightning
+          </button>
+        </div>
+
+        {tab === 'token' && (
+          <TokenTab
+            mints={mints}
+            onClose={onClose}
+            onProofsReceived={onProofsReceived}
+            onTransactionCreated={onTransactionCreated}
+          />
+        )}
+
+        {tab === 'lightning' && (
+          <LightningTab
+            mints={mints}
+            onClose={onClose}
+            onProofsReceived={onProofsReceived}
+            onTransactionCreated={onTransactionCreated}
+          />
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Token tab (existing receive flow)
+// ---------------------------------------------------------------------------
+
+const TokenTab: React.FC<{
+  mints: Mint[];
+  onClose: () => void;
+  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
+  onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<void>;
+}> = ({ mints, onClose, onProofsReceived, onTransactionCreated }) => {
   const [tokenInput, setTokenInput] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -32,20 +103,13 @@ export const ReceiveDialog: React.FC<ReceiveDialogProps> = ({
 
     setLoading(true);
     try {
-      // Extract mint URL without full decoding (avoids V4 keyset mapping issue)
       const mintUrl = extractMintUrl(trimmed);
-      if (!mintUrl) {
-        throw new Error('Could not determine mint URL from token');
-      }
+      if (!mintUrl) throw new Error('Could not determine mint URL from token');
 
       const knownMint = mints.find(m => m.url === mintUrl);
-
-      // Receive: wallet.receive() handles V4 keyset mapping internally
-      // because getWallet() calls loadMint() which fetches the mint's keysets
       const newProofs = await receiveToken(mintUrl, trimmed);
       const totalReceived = newProofs.reduce((s, p) => s + p.amount, 0);
 
-      // Store proofs (auto-adds mint if unknown)
       const contextId = knownMint?.contextId ?? '';
       await onProofsReceived(contextId, newProofs, mintUrl);
 
@@ -68,50 +132,262 @@ export const ReceiveDialog: React.FC<ReceiveDialogProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-card border border-border p-6 rounded-xl shadow-xl max-w-sm w-full space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <DownloadIcon className="h-5 w-5 text-[var(--color-info)]" />
-            <h3 className="text-lg font-semibold">Receive</h3>
+    <div className="space-y-3">
+      <div className="space-y-2">
+        <label className="text-xs text-muted-foreground">Cashu Token</label>
+        <textarea
+          value={tokenInput}
+          onChange={(e) => setTokenInput(e.target.value)}
+          placeholder="cashuA... or cashuB..."
+          rows={4}
+          className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm font-mono text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 resize-none"
+          autoFocus
+        />
+      </div>
+
+      <div className="flex gap-2 justify-end">
+        <button
+          onClick={onClose}
+          className="px-4 py-2 rounded-lg text-sm text-muted-foreground hover:text-foreground transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handleReceive}
+          disabled={!tokenInput.trim() || loading}
+          className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+        >
+          {loading && <Loader2Icon className="h-3 w-3 animate-spin" />}
+          Claim Token
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Lightning tab (create invoice via mint quote, show QR)
+// ---------------------------------------------------------------------------
+
+type LnStep = 'amount' | 'invoice' | 'waiting' | 'done' | 'error';
+
+const LightningTab: React.FC<{
+  mints: Mint[];
+  onClose: () => void;
+  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
+  onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<void>;
+}> = ({ mints, onClose, onProofsReceived, onTransactionCreated }) => {
+  const [selectedMint, setSelectedMint] = useState<Mint | null>(mints[0] ?? null);
+  const [amount, setAmount] = useState('');
+  const [lnStep, setLnStep] = useState<LnStep>('amount');
+  const [invoice, setInvoice] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [showRaw, setShowRaw] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval>>();
+  const mountedRef = useRef(true);
+  const busyRef = useRef(false);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
+  const handleCreateInvoice = async () => {
+    if (!selectedMint || !amount || busyRef.current) return;
+    const amountNum = parseInt(amount, 10);
+    if (isNaN(amountNum) || amountNum <= 0) return;
+
+    busyRef.current = true;
+    setLoading(true);
+    try {
+      const quote = await createMintQuote(selectedMint.url, amountNum, selectedMint.unit);
+      if (!mountedRef.current) return;
+      setInvoice(quote.request);
+      setLnStep('invoice');
+
+      const mintUrl = selectedMint.url;
+      const mintUnit = selectedMint.unit;
+      const mintCtx = selectedMint.contextId;
+      const quoteId = quote.quote;
+      const invoiceStr = quote.request;
+
+      pollRef.current = setInterval(async () => {
+        try {
+          const status = await checkMintQuote(mintUrl, quoteId, mintUnit);
+          if (!mountedRef.current) { clearInterval(pollRef.current); return; }
+          if (status.state === 'PAID') {
+            clearInterval(pollRef.current);
+            setLnStep('waiting');
+            try {
+              const proofs = await mintTokens(mintUrl, amountNum, quoteId, mintUnit);
+              if (!mountedRef.current) return;
+              await onProofsReceived(mintCtx, proofs, mintUrl);
+              await onTransactionCreated({
+                type: 'mint',
+                amount: amountNum,
+                unit: mintUnit,
+                mintUrl,
+                status: 'completed',
+                lightningInvoice: invoiceStr,
+              });
+              if (mountedRef.current) {
+                setLnStep('done');
+                toastSuccess('Received!', `+${amountNum} ${mintUnit}`);
+              }
+            } catch (err) {
+              if (mountedRef.current) {
+                setErrorMsg(err instanceof Error ? err.message : 'Failed to mint tokens');
+                setLnStep('error');
+              }
+            }
+          }
+        } catch { /* keep polling */ }
+      }, 3000);
+    } catch (err) {
+      toastError('Failed to create invoice', err);
+    } finally {
+      setLoading(false);
+      busyRef.current = false;
+    }
+  };
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(invoice);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toastError('Copy failed', new Error('Clipboard access denied'));
+    }
+  };
+
+  if (mints.length === 0) {
+    return (
+      <div className="py-4 text-center text-xs text-muted-foreground">
+        Add a mint first to receive via Lightning.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {lnStep === 'amount' && (
+        <>
+          {mints.length > 1 && (
+            <div className="space-y-2">
+              <label className="text-xs text-muted-foreground">Mint</label>
+              <select
+                value={selectedMint?.url ?? ''}
+                onChange={(e) => setSelectedMint(mints.find(m => m.url === e.target.value) ?? null)}
+                className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm"
+              >
+                {mints.map(m => (
+                  <option key={m.url} value={m.url}>
+                    {m.name || truncateMintUrl(m.url)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <label className="text-xs text-muted-foreground">Amount (sats)</label>
+            <input
+              type="number"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder="1000"
+              min="1"
+              className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm font-mono text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+              autoFocus
+            />
           </div>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
-            <XIcon className="h-4 w-4" />
-          </button>
-        </div>
 
-        <div className="space-y-2">
-          <label className="text-xs text-muted-foreground">Cashu Token</label>
-          <textarea
-            value={tokenInput}
-            onChange={(e) => setTokenInput(e.target.value)}
-            placeholder="cashuA... or cashuB..."
-            rows={4}
-            className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm font-mono text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 resize-none"
-            autoFocus
-          />
-          <p className="text-xs text-muted-foreground">
-            Paste a Cashu token to claim it. The token will be swapped with the mint for fresh proofs.
-          </p>
-        </div>
-
-        <div className="flex gap-2 justify-end">
           <button
-            onClick={onClose}
-            className="px-4 py-2 rounded-lg text-sm text-muted-foreground hover:text-foreground transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleReceive}
-            disabled={!tokenInput.trim() || loading}
-            className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+            onClick={handleCreateInvoice}
+            disabled={!amount || loading}
+            className="w-full px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
           >
             {loading && <Loader2Icon className="h-3 w-3 animate-spin" />}
-            Claim Token
+            Create Invoice
+          </button>
+        </>
+      )}
+
+      {lnStep === 'invoice' && (
+        <>
+          <p className="text-xs text-muted-foreground text-center">
+            Ask sender to scan this invoice for <span className="font-medium text-foreground">{amount} sats</span>
+          </p>
+
+          <QRCodeDisplay value={invoice} size={220} className="py-2" />
+
+          <button
+            onClick={handleCopy}
+            className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-border text-sm font-medium hover:bg-muted transition-colors"
+          >
+            {copied ? <CheckIcon className="h-4 w-4" /> : <CopyIcon className="h-4 w-4" />}
+            {copied ? 'Copied' : 'Copy Invoice'}
+          </button>
+
+          <button
+            onClick={() => setShowRaw(!showRaw)}
+            className="w-full flex items-center justify-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <ChevronDownIcon className={`h-3 w-3 transition-transform ${showRaw ? 'rotate-180' : ''}`} />
+            {showRaw ? 'Hide' : 'Show'} invoice text
+          </button>
+          {showRaw && (
+            <div className="p-3 rounded-lg bg-background border border-border max-h-20 overflow-y-auto">
+              <div className="token-string text-muted-foreground break-all">{invoice}</div>
+            </div>
+          )}
+
+          <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
+            <Loader2Icon className="h-3 w-3 animate-spin" />
+            Waiting for payment...
+          </div>
+        </>
+      )}
+
+      {lnStep === 'waiting' && (
+        <div className="flex flex-col items-center py-6 gap-3">
+          <Loader2Icon className="h-8 w-8 animate-spin text-primary" />
+          <p className="text-sm text-muted-foreground">Minting tokens...</p>
+        </div>
+      )}
+
+      {lnStep === 'done' && (
+        <div className="flex flex-col items-center py-6 gap-3">
+          <div className="text-4xl text-[var(--color-success)]">&#x2713;</div>
+          <p className="text-sm font-medium text-[var(--color-success)]">Received!</p>
+          <button
+            onClick={onClose}
+            className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity"
+          >
+            Done
           </button>
         </div>
-      </div>
+      )}
+
+      {lnStep === 'error' && (
+        <div className="flex flex-col items-center py-6 gap-3">
+          <div className="text-4xl text-destructive">!</div>
+          <p className="text-sm font-medium text-destructive">Minting failed</p>
+          <p className="text-xs text-muted-foreground text-center">{errorMsg}</p>
+          <button
+            onClick={onClose}
+            className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity"
+          >
+            Close
+          </button>
+        </div>
+      )}
     </div>
   );
 };
