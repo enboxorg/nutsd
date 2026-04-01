@@ -1,46 +1,34 @@
 /**
  * Cashu Transfer Protocol -- DWN protocol for P2P ecash transfers between DIDs.
  *
- * Enables sending Cashu tokens to another DID's DWN. The recipient's wallet
- * subscribes to incoming transfers and auto-claims them by swapping with
- * the mint.
+ * STATUS: DISABLED / NOT INSTALLED
  *
- * SECURITY WARNING -- NUT-11 P2PK REQUIRED FOR SAFE USE:
- * In the current implementation, transfer records contain raw Cashu token
- * strings. These are bearer instruments: anyone who can read the token can
- * claim it. If a DWN is operated by a third party, the operator could
- * front-run the recipient and steal the ecash.
+ * This protocol is defined but NOT installed or used. It is blocked at the
+ * application layer because safe P2P transfers require NUT-11 (Pay-to-Pubkey)
+ * to lock tokens to the recipient's DID public key before writing them to
+ * the DWN. Without P2PK, a DWN operator can front-run the recipient and
+ * steal the bearer ecash.
  *
- * Safe P2P transfers MUST lock the token to the recipient's public key
- * using NUT-11 (Pay-to-Pubkey) before writing it to the DWN. This ensures
- * only the holder of the recipient DID's private key can spend the proofs.
- * NUT-11 support is planned but not yet implemented.
+ * The protocol definition is kept here as a design reference for when NUT-11
+ * support is implemented. To enable it:
+ * 1. Implement NUT-11 P2PK token locking using the recipient DID's key
+ * 2. Re-add the protocol to the connect flow in EnboxProvider
+ * 3. Build the transfer UI
  *
- * Until NUT-11 is implemented, this protocol should only be used between
- * DIDs that operate their own DWN (self-hosted), where the operator and
- * the recipient are the same entity.
- *
- * Types:
- *   - transfer: An incoming ecash token sent by another DID
- *   - request: A payment request advertising accepted mints and amount
- *
- * Access control:
- *   - transfer: anyone can create (send you ecash), only author can read their own
- *   - request: only the owner can manage their own requests
+ * DO NOT install this protocol or write transfer records without P2PK.
  *
  * @module
  */
 
 import type { ProtocolDefinition } from '@enbox/dwn-sdk-js';
-import { defineProtocol } from '@enbox/api';
 
 // ---------------------------------------------------------------------------
-// Data types
+// Data types (design reference only — not active)
 // ---------------------------------------------------------------------------
 
 /** Incoming ecash transfer from another DID. */
 export type TransferData = {
-  /** Serialized Cashu token string (cashuA... or cashuB...). */
+  /** Serialized Cashu token string (must be NUT-11 P2PK locked). */
   token: string;
   /** Total token amount. */
   amount: number;
@@ -71,16 +59,7 @@ export type PaymentRequestData = {
 };
 
 // ---------------------------------------------------------------------------
-// Schema map
-// ---------------------------------------------------------------------------
-
-export type CashuTransferSchemaMap = {
-  transfer: TransferData;
-  request: PaymentRequestData;
-};
-
-// ---------------------------------------------------------------------------
-// Protocol definition
+// Protocol definition (design reference — NOT installed)
 // ---------------------------------------------------------------------------
 
 export const CashuTransferDefinition = {
@@ -99,34 +78,21 @@ export const CashuTransferDefinition = {
   structure: {
     transfer: {
       $actions: [
-        // Anyone can send ecash to this DID
         { who: 'anyone', can: ['create'] },
       ],
-      $tags: {
-        $allowUndefinedTags : true,
-        amount              : { type: 'number' },
-        mintUrl             : { type: 'string' },
-        senderDid           : { type: 'string' },
-        claimed             : { type: 'boolean' },
-      },
     },
-    request: {
-      $tags: {
-        $allowUndefinedTags : true,
-        amount              : { type: 'number' },
-        unit                : { type: 'string' },
-        fulfilled           : { type: 'boolean' },
-      },
-    },
+    request: {},
   },
 } as const satisfies ProtocolDefinition;
 
-// ---------------------------------------------------------------------------
-// Typed protocol export
-// ---------------------------------------------------------------------------
-
-/** Typed Cashu Transfer protocol for use with `enbox.using()`. */
-export const CashuTransferProtocol = defineProtocol(
-  CashuTransferDefinition,
-  {} as CashuTransferSchemaMap,
-);
+/**
+ * Runtime guard: throws if anyone attempts to use the transfer protocol.
+ * This ensures no code path can accidentally write unprotected bearer tokens.
+ */
+export function assertTransferProtocolDisabled(): never {
+  throw new Error(
+    'cashu-transfer protocol is disabled. P2P DWN transfers require NUT-11 ' +
+    '(Pay-to-Pubkey) to lock tokens to the recipient DID. Without P2PK, a ' +
+    'DWN operator can steal bearer tokens. See cashu-transfer-protocol.ts.',
+  );
+}

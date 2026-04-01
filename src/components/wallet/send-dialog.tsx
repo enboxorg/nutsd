@@ -52,6 +52,8 @@ export const SendDialog: React.FC<SendDialogProps> = ({
       const spentIds = storedProofs.map(p => p.id);
       const cashuProofs: Proof[] = storedProofs.map(p => ({
         amount: p.amount, id: p.keysetId, secret: p.secret, C: p.C,
+        ...(p.dleq ? { dleq: p.dleq } : {}),
+        ...(p.witness ? { witness: p.witness } : {}),
       }));
 
       // wallet.send() internally selects the optimal subset and returns:

@@ -39,11 +39,19 @@ export const RecoveryPhraseDialog: React.FC<RecoveryPhraseDialogProps> = ({
           <h3 className="text-lg font-semibold">Recovery Phrase</h3>
           <div className="flex items-start gap-2 p-3 rounded-lg bg-destructive/10 border border-destructive/20">
             <AlertTriangleIcon className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
-            <p className="text-xs text-destructive">
-              Write down these words and store them somewhere safe. This is the only way to recover
-              your DID and data if you clear your browser storage. Anyone with this phrase can
-              access your wallet and funds.
-            </p>
+            <div className="text-xs text-destructive space-y-1">
+              <p>
+                Write down these words and store them somewhere safe. This phrase
+                recovers your <strong>DID identity and DWN data</strong> (including
+                encrypted wallet records) if you clear your browser storage.
+              </p>
+              <p>
+                This is <strong>not</strong> a Cashu seed phrase. It does not enable
+                independent ecash recovery from mints (NUT-13/NUT-09 are not yet
+                implemented). If DWN data is lost without this phrase, funds
+                cannot be recovered.
+              </p>
+            </div>
           </div>
         </div>
 

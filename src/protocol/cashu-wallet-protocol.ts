@@ -16,11 +16,18 @@
  *
  * All records are owner-only (published: false).
  *
- * Sensitive types (proof, keyset, transaction) require DWN-level encryption
- * via `encryptionRequired: true`. The DWN encrypts record data using
- * protocol-path-derived keys from the tenant DID's X25519 keyAgreement key.
- * This means even a DWN server operator cannot read proof secrets, keyset
- * keys, or transaction details.
+ * ENCRYPTION:
+ * Sensitive types (proof, keyset, transaction) have `encryptionRequired: true`.
+ * The DWN encrypts record data using protocol-path-derived keys from the
+ * tenant DID's X25519 keyAgreement key. This requires a local/owner DID --
+ * delegate (wallet-connect) mode cannot encrypt and is blocked at the UI.
+ *
+ * TAG POLICY:
+ * Encrypted record types (proof, keyset, transaction) carry NO tags.
+ * Tags are stored in plaintext metadata and would leak sensitive information
+ * (balances, mint usage, activity types) to the DWN operator. All filtering
+ * is done client-side after decryption. Only the unencrypted `mint` type
+ * uses tags for efficient server-side queries.
  *
  * @module
  */
@@ -46,7 +53,14 @@ export type MintData = {
   info?: Record<string, unknown>;
 };
 
-/** Cached keyset for a mint. */
+/**
+ * Keyset record (reserved protocol path for future use).
+ *
+ * Keysets are currently managed in-memory by cashu-ts via Wallet.loadMint().
+ * This type exists to reserve the protocol path but no keyset records are
+ * written today. When NUT-13 deterministic secrets are implemented, keyset
+ * persistence will be needed for counter tracking.
+ */
 export type KeysetData = {
   /** Keyset ID (hex string). */
   keysetId: string;
@@ -56,8 +70,6 @@ export type KeysetData = {
   active: boolean;
   /** Input fee in ppk (parts per thousand). */
   inputFeePpk?: number;
-  /** The actual keyset keys (amount → pubkey mapping). */
-  keys: Record<string, string>;
 };
 
 /**
@@ -75,17 +87,17 @@ export type ProofData = {
   secret: string;
   /** Unblinded signature (hex string). */
   C: string;
-  /** Optional DLEQ proof. */
+  /** Optional DLEQ proof (NUT-12). */
   dleq?: {
     e: string;
     s: string;
     r: string;
   };
-  /** Optional witness for spending conditions. */
+  /** Optional witness for spending conditions (NUT-10/11). */
   witness?: string;
 };
 
-/** Proof lifecycle state. */
+/** Proof lifecycle state (tracked in encrypted record data, not tags). */
 export type ProofState = 'unspent' | 'pending' | 'spent';
 
 /**
@@ -179,38 +191,22 @@ export const CashuWalletDefinition = {
     },
   },
   structure: {
+    // Mint records are NOT encrypted (public URLs / names).
+    // Tags allowed here for efficient server-side queries.
     mint: {
       $tags: {
         $allowUndefinedTags : true,
         url                 : { type: 'string' },
         unit                : { type: 'string' },
-        active              : { type: 'boolean' },
       },
-      keyset: {
-        $tags: {
-          $allowUndefinedTags : true,
-          keysetId            : { type: 'string' },
-          active              : { type: 'boolean' },
-        },
-      },
-      proof: {
-        $tags: {
-          $allowUndefinedTags : true,
-          amount              : { type: 'number' },
-          keysetId            : { type: 'string' },
-          state               : { type: 'string', enum: ['unspent', 'pending', 'spent'] },
-        },
-      },
+      // Keyset and proof are encrypted → NO tags.
+      // Query by parent mint context, filter client-side after decryption.
+      keyset: {},
+      proof: {},
     },
-    transaction: {
-      $tags: {
-        $requiredTags       : ['type'],
-        $allowUndefinedTags : true,
-        type                : { type: 'string', enum: ['mint', 'melt', 'send', 'receive', 'swap', 'p2p-send', 'p2p-receive'] },
-        mintUrl             : { type: 'string' },
-        status              : { type: 'string', enum: ['pending', 'completed', 'failed'] },
-      },
-    },
+    // Transaction is encrypted → NO tags.
+    // Query all, sort/filter client-side after decryption.
+    transaction: {},
     preference: {
       $recordLimit: { max: 1, strategy: 'reject' },
     },

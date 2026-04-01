@@ -5,6 +5,9 @@
  * sets up subscriptions for real-time sync, and provides the
  * repository to child hooks.
  *
+ * TAG POLICY: Encrypted record types (proof, keyset, transaction)
+ * carry NO DWN tags. All filtering is done client-side after decryption.
+ *
  * @module
  */
 
@@ -18,7 +21,6 @@ import {
   type TransactionData,
   type PreferenceData,
   type ProofState,
-  type KeysetData,
 } from '@/protocol/cashu-wallet-protocol';
 
 // ---------------------------------------------------------------------------
@@ -76,14 +78,12 @@ export interface WalletPreferences {
 // Hook
 // ---------------------------------------------------------------------------
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Repo = any;
 
 export function useWallet() {
   const { enbox, isConnected } = useEnbox();
 
   const [repo, setRepo] = useState<Repo>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const typedRef = useRef<any>(null);
 
   // --- Core state ---
@@ -147,6 +147,7 @@ export function useWallet() {
     try {
       const allProofs: StoredProof[] = [];
       for (const mint of mints) {
+        // Query by parent context (mint), no tags — all filtering client-side
         const { records } = await repo.mint.proof.query(mint.contextId);
         for (const r of records) {
           const data: ProofData = await r.data.json();
@@ -159,7 +160,8 @@ export function useWallet() {
             keysetId       : data.id,
             secret         : data.secret,
             C              : data.C,
-            state          : (r.tags?.state as ProofState) ?? 'unspent',
+            // State is in the encrypted data, not tags
+            state          : 'unspent',
             dleq           : data.dleq,
             witness        : data.witness,
           });
@@ -174,6 +176,7 @@ export function useWallet() {
   const refreshTransactions = useCallback(async () => {
     if (!repo) return;
     try {
+      // Query all transactions — no tags, filter/sort client-side
       const { records } = await repo.transaction.query();
       const txList = await Promise.all(records.map(async (r: Record<string, unknown>) => {
         const data = await (r as { data: { json: () => Promise<TransactionData> } }).data.json();
@@ -293,9 +296,10 @@ export function useWallet() {
 
   const addMint = useCallback(async (data: MintData): Promise<Mint | undefined> => {
     if (!repo) return;
+    // Mint is unencrypted — tags are safe here (public info only)
     const { record } = await repo.mint.create({
       data,
-      tags: { url: data.url, unit: data.unit, active: data.active },
+      tags: { url: data.url, unit: data.unit },
     });
     if (!record) throw new Error('Failed to create mint record');
     const mint: Mint = {
@@ -316,12 +320,10 @@ export function useWallet() {
     if (!repo) return;
     const mint = mints.find(m => m.id === id);
     if (mint) {
-      // Delete child proofs
       try {
         const { records: proofRecords } = await repo.mint.proof.query(mint.contextId);
         for (const r of proofRecords) await r.delete();
       } catch { /* no proofs to delete */ }
-      // Delete child keysets
       try {
         const { records: keysetRecords } = await repo.mint.keyset.query(mint.contextId);
         for (const r of keysetRecords) await r.delete();
@@ -333,17 +335,18 @@ export function useWallet() {
   }, [repo, mints]);
 
   // --- Proof CRUD ---
+  // No tags on proof records — encrypted type.
 
   const addProof = useCallback(async (
     mintContextId: string,
     proofData: ProofData,
-    state: ProofState = 'unspent',
+    _state: ProofState = 'unspent',
   ): Promise<StoredProof | undefined> => {
     if (!repo) return;
     const mint = mints.find(m => m.contextId === mintContextId);
     const { record } = await repo.mint.proof.create(mintContextId, {
       data: proofData,
-      tags: { amount: proofData.amount, keysetId: proofData.id, state },
+      // NO tags — encrypted record type. State tracked in data.
     });
     if (!record) throw new Error('Failed to store proof');
     const stored: StoredProof = {
@@ -355,7 +358,7 @@ export function useWallet() {
       keysetId       : proofData.id,
       secret         : proofData.secret,
       C              : proofData.C,
-      state,
+      state          : _state,
       dleq           : proofData.dleq,
       witness        : proofData.witness,
     };
@@ -388,69 +391,14 @@ export function useWallet() {
     }
   }, [deleteProof]);
 
-  // --- Keyset CRUD ---
-
-  const addKeyset = useCallback(async (mintContextId: string, data: KeysetData) => {
-    if (!repo) return;
-    await repo.mint.keyset.create(mintContextId, {
-      data,
-      tags: { keysetId: data.keysetId, active: data.active },
-    });
-  }, [repo]);
-
-  /**
-   * Sync keysets from the mint into DWN.
-   * Fetches the mint's current keysets via cashu-ts and stores any
-   * that aren't already persisted. Also refreshes the wallet cache.
-   */
-  const syncKeysets = useCallback(async (mint: Mint) => {
-    if (!repo) return;
-    try {
-      // Force a fresh wallet (clears cached keysets)
-      const { getWallet } = await import('@/cashu/wallet-ops');
-      const wallet = await getWallet(mint.url, mint.unit);
-      const keys = wallet.keyChain;
-
-      // Get existing keyset IDs from DWN
-      const { records: existing } = await repo.mint.keyset.query(mint.contextId);
-      const existingIds = new Set<string>();
-      for (const r of existing) {
-        const d = await r.data.json();
-        existingIds.add(d.keysetId);
-      }
-
-      // Store new keysets
-      for (const keysetId of keys.getAllKeysetIds()) {
-        const keyset = keys.getKeyset(keysetId);
-        if (!keyset) continue;
-        if (!existingIds.has(keysetId)) {
-          await addKeyset(mint.contextId, {
-            keysetId,
-            unit        : mint.unit,
-            active      : true,
-            keys        : {}, // keys are cached in the Wallet instance
-          });
-        }
-      }
-    } catch (err) {
-      console.warn(`Failed to sync keysets for ${mint.url}:`, err);
-    }
-  }, [repo, addKeyset]);
-
-  // Sync keysets when mints are loaded
-  useEffect(() => {
-    for (const mint of mints) {
-      syncKeysets(mint);
-    }
-  }, [mints, syncKeysets]);
-
   // --- Transaction CRUD ---
+  // No tags on transaction records — encrypted type.
 
   const addTransaction = useCallback(async (data: TransactionData): Promise<Transaction | undefined> => {
     if (!repo) return;
     const { record } = await repo.transaction.create({
       data,
-      tags: { type: data.type, mintUrl: data.mintUrl, status: data.status },
+      // NO tags — encrypted record type.
     });
     if (!record) throw new Error('Failed to create transaction');
     const tx: Transaction = {
@@ -535,9 +483,6 @@ export function useWallet() {
 
     // Preferences
     updatePreferences,
-
-    // Keyset
-    addKeyset,
 
     // Repo access for advanced operations
     repo,

@@ -6,14 +6,12 @@ function PWABadge() {
     needRefresh: [needRefresh, setNeedRefresh],
     updateServiceWorker,
   } = useRegisterSW({
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     onRegisteredSW(swUrl: any, r: any) {
       console.log(`SW registered: ${swUrl}`);
       if (r) {
         setInterval(() => { r.update(); }, 60 * 60 * 1000);
       }
     },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     onRegisterError(error: any) {
       console.error('SW registration error:', error);
     },

@@ -3,10 +3,8 @@ import React, { createContext, useCallback, useEffect, useRef, useState } from '
 import { AuthManager } from '@enbox/auth';
 import type { AuthSession } from '@enbox/auth';
 import { Enbox } from '@enbox/api';
-import { BrowserConnectHandler } from '@enbox/browser';
 
-import { CashuWalletDefinition } from '@/protocol/cashu-wallet-protocol';
-import { CashuTransferDefinition } from '@/protocol/cashu-transfer-protocol';
+// Protocol is auto-configured via repository().configure() in use-wallet.ts
 
 // ---------------------------------------------------------------------------
 // Context shape
@@ -21,9 +19,12 @@ interface EnboxContextProps {
   isConnecting: boolean;
   /** Whether a session is active. */
   isConnected: boolean;
-  /** Connect to a wallet via the browser popup flow. */
-  connect: () => Promise<void>;
-  /** Create a new local DID (no wallet needed). */
+  /**
+   * Create a new local DID (owner identity with X25519 encryption keys).
+   * This is the only supported connect mode for nutsd because encrypted
+   * record types require the owner's private keys for encryption/decryption.
+   * Delegate/wallet-connect mode cannot encrypt and is blocked.
+   */
   connectLocal: () => Promise<void>;
   /** Disconnect (clean by default, nuclear if clearStorage is true). */
   disconnect: (options?: { clearStorage?: boolean }) => Promise<void>;
@@ -36,7 +37,6 @@ interface EnboxContextProps {
 export const EnboxContext = createContext<EnboxContextProps>({
   isConnecting        : false,
   isConnected         : false,
-  connect             : () => Promise.reject(new Error('EnboxProvider not mounted')),
   connectLocal        : () => Promise.reject(new Error('EnboxProvider not mounted')),
   disconnect          : () => Promise.reject(new Error('EnboxProvider not mounted')),
   clearRecoveryPhrase : () => {},
@@ -63,20 +63,16 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   // ── Bootstrap: create AuthManager once, then auto-restore ────────
+  // NOTE: No BrowserConnectHandler — wallet-connect/delegate mode is
+  // intentionally disabled. Delegate DIDs lack X25519 encryption keys,
+  // so writes to encryptionRequired types would fail. See P0-1.
   useEffect(() => {
     let cancelled = false;
 
     async function init() {
       setIsConnecting(true);
       try {
-        const auth = await AuthManager.create({
-          connectHandler : BrowserConnectHandler({
-            wallets: [
-              { name: 'Enbox Wallet', url: 'https://enbox-wallet.pages.dev' },
-              { name: 'Enbox Wallet (Blue)', url: 'https://blue-enbox-wallet.pages.dev' },
-            ],
-          }),
-        });
+        const auth = await AuthManager.create();
         if (cancelled) return;
         authRef.current = auth;
 
@@ -97,23 +93,9 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return () => { cancelled = true; };
   }, [applySession]);
 
-  // ── Connect: wallet popup flow ──────────────────────────────────
-  const connect = useCallback(async () => {
-    const auth = authRef.current;
-    if (!auth) throw new Error('AuthManager not ready');
-
-    setIsConnecting(true);
-    try {
-      const session = await auth.connect({
-        protocols: [CashuWalletDefinition, CashuTransferDefinition],
-      });
-      applySession(session);
-    } finally {
-      setIsConnecting(false);
-    }
-  }, [applySession]);
-
-  // ── Connect local: create a new DID without a wallet ────────────
+  // ── Connect local: create a new DID with full key material ──────
+  // Creates a did:dht with Ed25519 (signing) + X25519 (encryption).
+  // This is the only mode that can write encrypted DWN records.
   const connectLocal = useCallback(async () => {
     const auth = authRef.current;
     if (!auth) throw new Error('AuthManager not ready');
@@ -157,7 +139,6 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         did,
         isConnecting,
         isConnected,
-        connect,
         connectLocal,
         disconnect,
         recoveryPhrase,

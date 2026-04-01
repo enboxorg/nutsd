@@ -67,15 +67,30 @@ function WalletHome() {
 
   // --- Proof persistence helpers ---
 
-  /** Store Cashu proofs as DWN records. */
+  /** Store Cashu proofs as DWN records. Preserves all fields (dleq, witness). */
   const storeNewProofs = useCallback(async (mintContextId: string, cashuProofs: Proof[]) => {
     for (const proof of cashuProofs) {
-      await addProof(mintContextId, {
-        amount : proof.amount,
-        id     : proof.id,
-        secret : proof.secret,
-        C      : proof.C,
-      } as ProofData);
+      const data: ProofData = {
+        amount  : proof.amount,
+        id      : proof.id,
+        secret  : proof.secret,
+        C       : proof.C,
+      };
+      // Preserve optional NUT-12 DLEQ proof and NUT-10/11 witness
+      if (proof.dleq) {
+        data.dleq = {
+          e: String(proof.dleq.e),
+          s: String(proof.dleq.s),
+          r: String(proof.dleq.r),
+        };
+      }
+      if (proof.witness) {
+        // witness can be string | P2PKWitness | HTLCWitness — serialize to string
+        data.witness = typeof proof.witness === 'string'
+          ? proof.witness
+          : JSON.stringify(proof.witness);
+      }
+      await addProof(mintContextId, data);
     }
   }, [addProof]);
 

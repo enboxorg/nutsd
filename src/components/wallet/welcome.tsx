@@ -35,9 +35,9 @@ export const Welcome: React.FC = () => {
           <div className="flex items-start gap-3 p-3 rounded-lg bg-card border border-border">
             <RefreshCwIcon className="h-5 w-5 text-primary mt-0.5 shrink-0" />
             <div>
-              <div className="text-sm font-medium">Synced across devices</div>
+              <div className="text-sm font-medium">Encrypted DWN storage</div>
               <div className="text-xs text-muted-foreground">
-                Wallet state stored in your personal DWN. No cloud accounts needed.
+                Proofs and transactions encrypted in your personal DWN. Not even the server can read them.
               </div>
             </div>
           </div>
@@ -64,7 +64,7 @@ export const Welcome: React.FC = () => {
             onClick={() => setShowConnect(true)}
             className="w-full px-6 py-3 rounded-full bg-primary text-primary-foreground font-medium text-sm hover:opacity-90 transition-opacity"
           >
-            Connect Wallet
+            Create Identity
           </button>
         )}
       </div>
