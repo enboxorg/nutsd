@@ -67,24 +67,19 @@ export function extractMintUrl(encodedToken: string): string | null {
   }
 
   // V4 token (cashuB): base64url-encoded CBOR
-  // The mint URL is a UTF-8 string embedded in the CBOR payload.
-  // Rather than adding a CBOR parser, we decode the bytes and
-  // search for the URL pattern — the mint URL is the only URL present.
+  // Minimal CBOR parsing to extract the "m" (mint URL) field.
+  // CBOR fields are length-prefixed, so we read the exact byte length
+  // of the URL string rather than using regex (which grabs adjacent fields).
   if (trimmed.startsWith('cashuB')) {
     try {
       const b64url = trimmed.slice(6);
-      // base64url → standard base64
       const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
       const binStr = atob(b64);
       const bytes = new Uint8Array(binStr.length);
       for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
 
-      const text = new TextDecoder().decode(bytes);
-      const match = text.match(/https?:\/\/[^\x00-\x1f\x7f-\x9f\s"',}\]]+/);
-      if (match) {
-        // Clean trailing non-URL bytes that CBOR length encoding may leave
-        return match[0].replace(/[^a-zA-Z0-9/:._~\-!$&'()*+,;=@%]+$/, '');
-      }
+      const url = readCborMintUrl(bytes);
+      if (url) return url;
     } catch { /* fall through */ }
   }
 
@@ -158,4 +153,69 @@ export function sumProofs(proofs: Proof[]): number {
 export function isCashuToken(str: string): boolean {
   const trimmed = str.trim();
   return trimmed.startsWith('cashuA') || trimmed.startsWith('cashuB');
+}
+
+// ---------------------------------------------------------------------------
+// Minimal CBOR parsing for V4 token mint URL extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Read a CBOR text string at a given offset.
+ * Returns the decoded string and the byte offset after it, or null on failure.
+ *
+ * CBOR text strings (major type 3):
+ *   0x60-0x77 : inline length 0-23
+ *   0x78      : 1-byte length follows
+ *   0x79      : 2-byte length follows
+ */
+function readCborText(bytes: Uint8Array, offset: number): { value: string; end: number } | null {
+  if (offset >= bytes.length) return null;
+  const initial = bytes[offset];
+  const majorType = initial >> 5;
+  if (majorType !== 3) return null; // not a text string
+
+  const info = initial & 0x1f;
+  let length: number;
+  let dataStart: number;
+
+  if (info < 24) {
+    length = info;
+    dataStart = offset + 1;
+  } else if (info === 24) {
+    if (offset + 1 >= bytes.length) return null;
+    length = bytes[offset + 1];
+    dataStart = offset + 2;
+  } else if (info === 25) {
+    if (offset + 2 >= bytes.length) return null;
+    length = (bytes[offset + 1] << 8) | bytes[offset + 2];
+    dataStart = offset + 3;
+  } else {
+    return null; // 4-byte / 8-byte / indefinite — too long for a mint URL
+  }
+
+  if (dataStart + length > bytes.length) return null;
+  const value = new TextDecoder().decode(bytes.subarray(dataStart, dataStart + length));
+  return { value, end: dataStart + length };
+}
+
+/**
+ * Extract the mint URL from V4 token CBOR bytes.
+ *
+ * The V4 token is a CBOR map with key "m" → mint URL string.
+ * We scan for the CBOR encoding of the key "m" (0x61 0x6d = text(1) "m")
+ * and then read the following CBOR text string with its exact length prefix.
+ */
+function readCborMintUrl(bytes: Uint8Array): string | null {
+  // Search for key "m": CBOR text string of length 1 containing 'm'
+  // Encoded as: 0x61 (major type 3, length 1) followed by 0x6d ('m')
+  for (let i = 0; i < bytes.length - 4; i++) {
+    if (bytes[i] === 0x61 && bytes[i + 1] === 0x6d) {
+      // The value immediately follows the key
+      const result = readCborText(bytes, i + 2);
+      if (result && result.value.startsWith('http')) {
+        return result.value;
+      }
+    }
+  }
+  return null;
 }
