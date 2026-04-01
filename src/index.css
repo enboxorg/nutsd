@@ -1,0 +1,150 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * nutsd design tokens
+ * Based on the Enbox design language (~/src/enboxorg/design)
+ * Product accent: moneyd (gold → warm yellow) — perfect for ecash wallet
+ *
+ * Enbox design tokens mapped to shadcn/ui HSL variables for component compat.
+ * Dark mode is default. Light mode activated via class="light" on <html>.
+ */
+
+@layer base {
+  :root {
+    /* Enbox global tokens */
+    --color-success: #34d399;
+    --color-warning: #fbbf24;
+    --color-error: #f87171;
+    --color-info: #60a5fa;
+
+    /* nutsd product accent (moneyd gold) */
+    --accent-hex: #ffc44d;
+    --accent-rgb: 255, 196, 77;
+
+    /* Light mode — shadcn/ui HSL variables */
+    --background: 40 33% 98%;
+    --foreground: 30 8% 10%;
+    --card: 40 24% 96%;
+    --card-foreground: 30 8% 10%;
+    --popover: 40 24% 96%;
+    --popover-foreground: 30 8% 10%;
+    --primary: 42 100% 65%;
+    --primary-foreground: 30 8% 6%;
+    --secondary: 36 14% 88%;
+    --secondary-foreground: 30 8% 20%;
+    --muted: 36 14% 91%;
+    --muted-foreground: 30 6% 45%;
+    --accent: 36 14% 88%;
+    --accent-foreground: 30 8% 20%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 40 33% 98%;
+    --border: 36 12% 84%;
+    --input: 36 12% 84%;
+    --ring: 42 100% 65%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    /* Enbox dark palette mapped to shadcn HSL vars
+       surface-0: #08090a → 210 11% 3%  (page bg)
+       surface-1: #0e1011 → 200 10% 6%  (cards)
+       surface-2: #131618 → 207 10% 8%  (elevated)
+       surface-3: #1a1d20 → 210 9%  11% (hover)
+       gray-700:  #2a2f35 → 213 12% 19% (borders)
+       gray-500:  #545d69 → 214 11% 37% (muted fg)
+       gray-300:  #a0a9b4 → 213 12% 67% (secondary text)
+       gray-50:   #f3f4f6 → 220 14% 96% (primary text)
+    */
+    --background: 210 11% 3%;
+    --foreground: 220 14% 96%;
+    --card: 200 10% 6%;
+    --card-foreground: 220 14% 96%;
+    --popover: 207 10% 8%;
+    --popover-foreground: 220 14% 96%;
+    --primary: 42 100% 65%;
+    --primary-foreground: 210 11% 3%;
+    --secondary: 213 12% 15%;
+    --secondary-foreground: 220 14% 96%;
+    --muted: 213 12% 12%;
+    --muted-foreground: 213 12% 55%;
+    --accent: 213 12% 15%;
+    --accent-foreground: 220 14% 96%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 220 14% 96%;
+    --border: 213 12% 19%;
+    --input: 213 12% 19%;
+    --ring: 42 100% 65%;
+
+    --color-success: #34d399;
+    --color-warning: #fbbf24;
+    --color-error: #f87171;
+    --color-info: #60a5fa;
+  }
+
+  /* Light overrides for status colors */
+  :root:not(.dark) {
+    --color-success: #059669;
+    --color-warning: #d97706;
+    --color-error: #dc2626;
+    --color-info: #2563eb;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-border rounded-full;
+}
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-muted-foreground/40;
+}
+
+/* Amount display — large mono numbers */
+.amount-display {
+  font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+/* Token string display — mono, truncatable */
+.token-string {
+  font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.75rem;
+  word-break: break-all;
+  line-height: 1.5;
+}
+
+/* ------------------------------------------------------------ 
+   dnuts product theme — teal/mint accent
+   Activated via VITE_PRODUCT_THEME=dnuts at build time.
+   ------------------------------------------------------------ */
+@layer base {
+  [data-product='dnuts'] {
+    --primary: 168 84% 58%;
+    --ring: 168 84% 58%;
+  }
+  [data-product='dnuts'].dark,
+  .dark[data-product='dnuts'] {
+    --primary: 168 84% 58%;
+    --primary-foreground: 210 11% 3%;
+    --ring: 168 84% 58%;
+  }
+}
