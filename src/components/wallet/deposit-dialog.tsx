@@ -11,7 +11,7 @@ interface DepositDialogProps {
   mints: Mint[];
   onClose: () => void;
   onProofsReceived: (mintContextId: string, proofs: Proof[]) => Promise<void>;
-  onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<void>;
+  onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
 }
 
 type Step = 'amount' | 'invoice' | 'waiting' | 'done' | 'error';
@@ -116,7 +116,6 @@ export const DepositDialog: React.FC<DepositDialogProps> = ({
       const mintUnit = selectedMint.unit;
       const mintCtx = selectedMint.contextId;
       const quoteId = quote.quote;
-      const invoiceStr = quote.request;
 
       // Start polling for payment
       pollRef.current = setInterval(async () => {
@@ -140,7 +139,7 @@ export const DepositDialog: React.FC<DepositDialogProps> = ({
                 unit: mintUnit,
                 mintUrl,
                 status: 'completed',
-                lightningInvoice: invoiceStr,
+                memo: 'Lightning deposit',
               });
 
               if (mountedRef.current) {

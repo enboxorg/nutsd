@@ -2,7 +2,7 @@
 
 **Decentralized Cashu ecash wallet powered by Enbox.**
 
-nutsd is a Cashu ecash wallet that stores your wallet state in your personal [Decentralized Web Node (DWN)](https://identity.foundation/decentralized-web-node/spec/) instead of a centralized server or local-only browser storage. Your proofs, mints, and transaction history live in encrypted DWN records you control — synced across devices, owned by your DID.
+nutsd is a Cashu ecash wallet that stores your wallet state in your personal [Decentralized Web Node (DWN)](https://identity.foundation/decentralized-web-node/spec/) instead of a centralized server or local-only browser storage. Your proofs, mints, and transaction history live in DWN records you control — synced across devices, owned by your DID. Sensitive record types (proofs, keysets, transactions) require DWN-level encryption (`encryptionRequired: true`), so even the DWN server operator cannot read your ecash secrets.
 
 **Live:** [nutsd.pages.dev](https://nutsd.pages.dev) &middot; [dnuts.pages.dev](https://dnuts.pages.dev)
 
@@ -16,7 +16,7 @@ nutsd takes a different approach:
 
 | | Traditional Cashu Wallets | nutsd |
 |---|---|---|
-| **Storage** | localStorage / app sandbox / cloud DB | Your personal DWN (encrypted, user-owned) |
+| **Storage** | localStorage / app sandbox / cloud DB | Your personal DWN (private, encrypted sensitive types) |
 | **Identity** | None or custodial accounts | Decentralized Identifiers (DIDs) |
 | **Multi-device** | Manual backup / restore | Automatic DWN sync |
 | **Portability** | Locked to one app | Any DWN-compatible app can read your wallet |
@@ -26,7 +26,7 @@ nutsd takes a different approach:
 ### How it works
 
 1. **Connect** with a DID — either via an Enbox wallet or by creating a local identity
-2. **DWN protocols** define the schema for your wallet data (mints, proofs, transactions) as typed, encrypted records in your personal data store
+2. **DWN protocols** define the schema for your wallet data (mints, proofs, transactions) as typed records in your personal data store — proofs, keysets, and transactions are encrypted at the DWN layer
 3. **Cashu operations** (mint, melt, send, receive) are handled by [cashu-ts](https://github.com/cashubtc/cashu-ts), with proof lifecycle managed through DWN records
 4. **Real-time sync** — subscribe to protocol-level changes so multi-device state stays consistent
 
@@ -167,6 +167,22 @@ npx wrangler pages deploy dist --project-name dnuts --branch main
 | [07](https://github.com/cashubtc/nuts/blob/main/07.md) | Token state check | Supported |
 | [11](https://github.com/cashubtc/nuts/blob/main/11.md) | Pay-to-Pubkey (P2PK) | Planned |
 | [13](https://github.com/cashubtc/nuts/blob/main/13.md) | Deterministic secrets | Planned |
+
+---
+
+## Security model
+
+### What is protected
+
+- **Proof secrets, keyset keys, and transaction details** (including sent Cashu token strings) are stored in DWN record types with `encryptionRequired: true`. The DWN encrypts these using protocol-path-derived keys from the tenant DID's X25519 keyAgreement key. A DWN server operator cannot read them.
+- **Sent token strings** are stored encrypted in the transaction record so they can be re-copied and spend-checked across sessions and devices. Once a sent token is confirmed spent (NUT-07), the token is cleared from the record -- it's no longer needed.
+- **Mint configurations** are stored without encryption (they contain only public URLs and names).
+
+### What is not yet implemented
+
+- **NUT-11 P2PK (Pay-to-Pubkey)**: The P2P transfer protocol (`cashu-transfer-protocol.ts`) stores raw bearer tokens. Until NUT-11 locks tokens to the recipient DID's public key, DWN-mediated transfers are safe only when the recipient operates their own DWN. NUT-11 support is planned.
+- **NUT-13 deterministic secrets**: Proofs use random secrets. If DWN data is lost, funds cannot be independently recovered from a seed phrase the way they can in reference wallets. The recovery phrase shown during setup recovers the DID and DWN data, not the Cashu proofs directly. NUT-13 support is planned.
+- **NUT-09 signature restore**: Not yet implemented. Would allow recovering proofs from a mint using deterministic secrets.
 
 ---
 

@@ -12,7 +12,7 @@ interface ReceiveDialogProps {
   mints: Mint[];
   onClose: () => void;
   onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
-  onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<void>;
+  onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
 }
 
 type Tab = 'token' | 'lightning';
@@ -89,7 +89,7 @@ const TokenTab: React.FC<{
   mints: Mint[];
   onClose: () => void;
   onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
-  onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<void>;
+  onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
 }> = ({ mints, onClose, onProofsReceived, onTransactionCreated }) => {
   const [tokenInput, setTokenInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -119,7 +119,6 @@ const TokenTab: React.FC<{
         unit: 'sat',
         mintUrl,
         status: 'completed',
-        cashuToken: trimmed,
       });
 
       toastSuccess('Token received', `+${totalReceived} sat`);
@@ -175,7 +174,7 @@ const LightningTab: React.FC<{
   mints: Mint[];
   onClose: () => void;
   onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
-  onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<void>;
+  onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
 }> = ({ mints, onClose, onProofsReceived, onTransactionCreated }) => {
   const [selectedMint, setSelectedMint] = useState<Mint | null>(mints[0] ?? null);
   const [amount, setAmount] = useState('');
@@ -214,7 +213,6 @@ const LightningTab: React.FC<{
       const mintUnit = selectedMint.unit;
       const mintCtx = selectedMint.contextId;
       const quoteId = quote.quote;
-      const invoiceStr = quote.request;
 
       pollRef.current = setInterval(async () => {
         try {
@@ -233,7 +231,7 @@ const LightningTab: React.FC<{
                 unit: mintUnit,
                 mintUrl,
                 status: 'completed',
-                lightningInvoice: invoiceStr,
+                memo: `Lightning deposit via ${truncateMintUrl(mintUrl)}`,
               });
               if (mountedRef.current) {
                 setLnStep('done');

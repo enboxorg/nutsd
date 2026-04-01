@@ -5,6 +5,21 @@
  * subscribes to incoming transfers and auto-claims them by swapping with
  * the mint.
  *
+ * SECURITY WARNING -- NUT-11 P2PK REQUIRED FOR SAFE USE:
+ * In the current implementation, transfer records contain raw Cashu token
+ * strings. These are bearer instruments: anyone who can read the token can
+ * claim it. If a DWN is operated by a third party, the operator could
+ * front-run the recipient and steal the ecash.
+ *
+ * Safe P2P transfers MUST lock the token to the recipient's public key
+ * using NUT-11 (Pay-to-Pubkey) before writing it to the DWN. This ensures
+ * only the holder of the recipient DID's private key can spend the proofs.
+ * NUT-11 support is planned but not yet implemented.
+ *
+ * Until NUT-11 is implemented, this protocol should only be used between
+ * DIDs that operate their own DWN (self-hosted), where the operator and
+ * the recipient are the same entity.
+ *
  * Types:
  *   - transfer: An incoming ecash token sent by another DID
  *   - request: A payment request advertising accepted mints and amount

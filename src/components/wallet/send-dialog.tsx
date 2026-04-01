@@ -15,7 +15,7 @@ interface SendDialogProps {
   onNewProofs: (mintContextId: string, proofs: Proof[]) => Promise<void>;
   /** Delete specific proof DWN records by their IDs. */
   onOldProofsSpent: (ids: string[]) => Promise<void>;
-  onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<void>;
+  onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
 }
 
 type Step = 'amount' | 'token';
@@ -72,6 +72,8 @@ export const SendDialog: React.FC<SendDialogProps> = ({
       }
       await onOldProofsSpent(spentIds);
 
+      // Record transaction in DWN -- cashuToken is encrypted at the DWN layer
+      // (encryptionRequired: true on the transaction type). Cleared once spent.
       await onTransactionCreated({
         type: 'send',
         amount: amountNum,

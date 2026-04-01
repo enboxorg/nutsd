@@ -15,7 +15,7 @@ interface WithdrawDialogProps {
   onNewProofs: (mintContextId: string, proofs: Proof[]) => Promise<void>;
   /** Delete specific proof DWN records by their IDs. */
   onOldProofsSpent: (ids: string[]) => Promise<void>;
-  onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<void>;
+  onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
 }
 
 type Step = 'invoice' | 'confirm' | 'paying' | 'done' | 'error';
@@ -97,7 +97,7 @@ export const WithdrawDialog: React.FC<WithdrawDialogProps> = ({
           unit: selectedMint.unit,
           mintUrl: selectedMint.url,
           status: 'completed',
-          lightningInvoice: invoice.trim(),
+          memo: 'Lightning withdrawal',
         });
 
         setStep('done');

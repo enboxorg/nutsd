@@ -58,8 +58,8 @@ export interface Transaction {
   unit: string;
   mintUrl: string;
   status: TransactionData['status'];
+  /** Encrypted cashu token for sends. Cleared once confirmed spent. */
   cashuToken?: string;
-  lightningInvoice?: string;
   recipientDid?: string;
   senderDid?: string;
   memo?: string;
@@ -185,7 +185,6 @@ export function useWallet() {
           mintUrl          : data.mintUrl,
           status           : data.status,
           cashuToken       : data.cashuToken,
-          lightningInvoice : data.lightningInvoice,
           recipientDid     : data.recipientDid,
           senderDid        : data.senderDid,
           memo             : data.memo,
@@ -312,11 +311,26 @@ export function useWallet() {
     return mint;
   }, [repo]);
 
+  /** Remove a mint and cascade-delete its child proofs and keysets. */
   const removeMint = useCallback(async (id: string) => {
     if (!repo) return;
+    const mint = mints.find(m => m.id === id);
+    if (mint) {
+      // Delete child proofs
+      try {
+        const { records: proofRecords } = await repo.mint.proof.query(mint.contextId);
+        for (const r of proofRecords) await r.delete();
+      } catch { /* no proofs to delete */ }
+      // Delete child keysets
+      try {
+        const { records: keysetRecords } = await repo.mint.keyset.query(mint.contextId);
+        for (const r of keysetRecords) await r.delete();
+      } catch { /* no keysets to delete */ }
+    }
     await repo.mint.delete(id);
     setMints(prev => prev.filter(m => m.id !== id));
-  }, [repo]);
+    setProofs(prev => prev.filter(p => p.mintContextId !== (mint?.contextId ?? id)));
+  }, [repo, mints]);
 
   // --- Proof CRUD ---
 
@@ -384,6 +398,52 @@ export function useWallet() {
     });
   }, [repo]);
 
+  /**
+   * Sync keysets from the mint into DWN.
+   * Fetches the mint's current keysets via cashu-ts and stores any
+   * that aren't already persisted. Also refreshes the wallet cache.
+   */
+  const syncKeysets = useCallback(async (mint: Mint) => {
+    if (!repo) return;
+    try {
+      // Force a fresh wallet (clears cached keysets)
+      const { getWallet } = await import('@/cashu/wallet-ops');
+      const wallet = await getWallet(mint.url, mint.unit);
+      const keys = wallet.keyChain;
+
+      // Get existing keyset IDs from DWN
+      const { records: existing } = await repo.mint.keyset.query(mint.contextId);
+      const existingIds = new Set<string>();
+      for (const r of existing) {
+        const d = await r.data.json();
+        existingIds.add(d.keysetId);
+      }
+
+      // Store new keysets
+      for (const keysetId of keys.getAllKeysetIds()) {
+        const keyset = keys.getKeyset(keysetId);
+        if (!keyset) continue;
+        if (!existingIds.has(keysetId)) {
+          await addKeyset(mint.contextId, {
+            keysetId,
+            unit        : mint.unit,
+            active      : true,
+            keys        : {}, // keys are cached in the Wallet instance
+          });
+        }
+      }
+    } catch (err) {
+      console.warn(`Failed to sync keysets for ${mint.url}:`, err);
+    }
+  }, [repo, addKeyset]);
+
+  // Sync keysets when mints are loaded
+  useEffect(() => {
+    for (const mint of mints) {
+      syncKeysets(mint);
+    }
+  }, [mints, syncKeysets]);
+
   // --- Transaction CRUD ---
 
   const addTransaction = useCallback(async (data: TransactionData): Promise<Transaction | undefined> => {
@@ -401,7 +461,6 @@ export function useWallet() {
       mintUrl          : data.mintUrl,
       status           : data.status,
       cashuToken       : data.cashuToken,
-      lightningInvoice : data.lightningInvoice,
       recipientDid     : data.recipientDid,
       senderDid        : data.senderDid,
       memo             : data.memo,
@@ -409,6 +468,27 @@ export function useWallet() {
     };
     setTransactions(prev => [tx, ...prev]);
     return tx;
+  }, [repo]);
+
+  /**
+   * Clear the cashuToken from a sent transaction after confirming it's spent.
+   * The token is no longer needed once the recipient has claimed it.
+   */
+  const clearTransactionToken = useCallback(async (txId: string) => {
+    if (!repo) return;
+    try {
+      const { records } = await repo.transaction.query();
+      const record = records.find((r: { id: string }) => r.id === txId);
+      if (record) {
+        const data: TransactionData = await record.data.json();
+        await record.update({ data: { ...data, cashuToken: undefined } });
+        setTransactions(prev =>
+          prev.map(t => t.id === txId ? { ...t, cashuToken: undefined } : t),
+        );
+      }
+    } catch (err) {
+      console.warn('Failed to clear transaction token:', err);
+    }
   }, [repo]);
 
   // --- Preferences ---
@@ -450,6 +530,7 @@ export function useWallet() {
 
     // Transaction operations
     addTransaction,
+    clearTransactionToken,
     refreshTransactions,
 
     // Preferences

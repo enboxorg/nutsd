@@ -14,12 +14,13 @@
  *   transaction (top-level)
  *   preference (top-level, singleton)
  *
- * All records are owner-only (published: false), encrypted at the DWN layer.
+ * All records are owner-only (published: false).
  *
- * NOTE: encryptionRequired is omitted because the current delegate model
- * doesn't support client-side encryption -- the delegate doesn't have the
- * owner's private keys to derive encryption keys. This is a known platform
- * limitation awaiting agent-level changes.
+ * Sensitive types (proof, keyset, transaction) require DWN-level encryption
+ * via `encryptionRequired: true`. The DWN encrypts record data using
+ * protocol-path-derived keys from the tenant DID's X25519 keyAgreement key.
+ * This means even a DWN server operator cannot read proof secrets, keyset
+ * keys, or transaction details.
  *
  * @module
  */
@@ -87,7 +88,16 @@ export type ProofData = {
 /** Proof lifecycle state. */
 export type ProofState = 'unspent' | 'pending' | 'spent';
 
-/** Transaction history record. */
+/**
+ * Transaction history record.
+ *
+ * SECURITY: The `transaction` type has `encryptionRequired: true`, so all
+ * record data (including cashuToken) is encrypted at the DWN layer using
+ * protocol-path-derived keys. A DWN server operator cannot read the token.
+ *
+ * The `cashuToken` field is set for 'send' transactions and cleared
+ * (set to undefined) once the token is confirmed spent via NUT-07.
+ */
 export type TransactionData = {
   /** Transaction type. */
   type: 'mint' | 'melt' | 'send' | 'receive' | 'swap' | 'p2p-send' | 'p2p-receive';
@@ -99,10 +109,11 @@ export type TransactionData = {
   mintUrl: string;
   /** Transaction status. */
   status: 'pending' | 'completed' | 'failed';
-  /** Cashu token string (for send/receive). */
+  /**
+   * Cashu token string for 'send' transactions.
+   * Encrypted at the DWN layer. Cleared once confirmed spent.
+   */
   cashuToken?: string;
-  /** Lightning invoice (for mint/melt). */
-  lightningInvoice?: string;
   /** Recipient DID (for p2p-send). */
   recipientDid?: string;
   /** Sender DID (for p2p-receive). */
@@ -148,16 +159,19 @@ export const CashuWalletDefinition = {
       dataFormats : ['application/json'],
     },
     keyset: {
-      schema      : 'https://enbox.id/schemas/cashu-wallet/keyset',
-      dataFormats : ['application/json'],
+      schema              : 'https://enbox.id/schemas/cashu-wallet/keyset',
+      dataFormats         : ['application/json'],
+      encryptionRequired  : true,
     },
     proof: {
-      schema      : 'https://enbox.id/schemas/cashu-wallet/proof',
-      dataFormats : ['application/json'],
+      schema              : 'https://enbox.id/schemas/cashu-wallet/proof',
+      dataFormats         : ['application/json'],
+      encryptionRequired  : true,
     },
     transaction: {
-      schema      : 'https://enbox.id/schemas/cashu-wallet/transaction',
-      dataFormats : ['application/json'],
+      schema              : 'https://enbox.id/schemas/cashu-wallet/transaction',
+      dataFormats         : ['application/json'],
+      encryptionRequired  : true,
     },
     preference: {
       schema      : 'https://enbox.id/schemas/cashu-wallet/preference',

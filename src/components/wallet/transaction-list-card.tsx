@@ -66,7 +66,7 @@ function TransactionRow({
   const color = TX_COLORS[tx.type] ?? 'text-muted-foreground';
   const isIncoming = ['mint', 'receive', 'p2p-receive'].includes(tx.type);
   const sign = isIncoming ? '+' : '-';
-  const hasCopyableToken = tx.type === 'send' && tx.cashuToken;
+  const hasCopyableToken = tx.type === 'send' && !!tx.cashuToken;
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();

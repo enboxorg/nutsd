@@ -51,6 +51,7 @@ function WalletHome() {
     addProof,
     deleteProofs,
     addTransaction,
+    clearTransactionToken,
     getUnspentProofsForMint,
   } = useWallet();
 
@@ -108,11 +109,13 @@ function WalletHome() {
     }
   }, [deleteProofs]);
 
-  const recordTransaction = useCallback(async (data: Omit<TransactionData, 'createdAt'>) => {
-    await addTransaction({
+  /** Record a transaction in DWN. Returns the record ID. */
+  const recordTransaction = useCallback(async (data: Omit<TransactionData, 'createdAt'>): Promise<string | undefined> => {
+    const tx = await addTransaction({
       ...data,
       createdAt: new Date().toISOString(),
     });
+    return tx?.id;
   }, [addTransaction]);
 
   const handleAddMint = useCallback(async (data: MintData) => {
@@ -122,8 +125,13 @@ function WalletHome() {
   /** Check if a sent token has been claimed by the recipient (NUT-07). */
   const handleCheckTokenSpent = useCallback(async (tx: Transaction): Promise<boolean | null> => {
     if (!tx.cashuToken) return null;
-    return checkTokenSpent(tx.cashuToken, tx.mintUrl, tx.unit);
-  }, []);
+    const isSpent = await checkTokenSpent(tx.cashuToken, tx.mintUrl, tx.unit);
+    // If confirmed spent, clear the bearer token from the DWN record
+    if (isSpent === true) {
+      clearTransactionToken(tx.id);
+    }
+    return isSpent;
+  }, [clearTransactionToken]);
 
   const handleDisconnect = async () => {
     try {
