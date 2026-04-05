@@ -19,8 +19,8 @@
  * ENCRYPTION:
  * Sensitive types (proof, keyset, transaction) have `encryptionRequired: true`.
  * The DWN encrypts record data using protocol-path-derived keys from the
- * tenant DID's X25519 keyAgreement key. This requires a local/owner DID --
- * delegate (wallet-connect) mode cannot encrypt and is blocked at the UI.
+ * tenant DID's X25519 keyAgreement key. Local owner sessions and delegated
+ * wallet-connect sessions are both supported by the latest Enbox auth stack.
  *
  * TAG POLICY:
  * Encrypted record types (proof, keyset, transaction) carry NO tags.
