@@ -16,17 +16,17 @@ importers:
         specifier: ^3.6.2
         version: 3.6.2
       '@enbox/agent':
-        specifier: ^0.6.0
-        version: 0.6.0
+        specifier: ^0.6.1
+        version: 0.6.1
       '@enbox/api':
-        specifier: ^0.6.12
-        version: 0.6.12
+        specifier: ^0.6.13
+        version: 0.6.13
       '@enbox/auth':
-        specifier: ^0.6.20
-        version: 0.6.20
+        specifier: ^0.6.21
+        version: 0.6.21
       '@enbox/browser':
-        specifier: ^0.1.24
-        version: 0.1.24
+        specifier: ^0.1.25
+        version: 0.1.25
       '@enbox/dwn-sdk-js':
         specifier: ^0.3.2
         version: 0.3.2
@@ -751,20 +751,20 @@ packages:
     resolution: {integrity: sha512-WXTuFvL3G+74SchFAtz3FgIYVOe196ycvGsMgvSH/8Goptb1qpIQtIuM4SOK9G9lhMWYpHxnXyy544ZhluFOew==}
     engines: {node: '>=6'}
 
-  '@enbox/agent@0.6.0':
-    resolution: {integrity: sha512-JzyjvGbnJPpJa64sB0fTEp5Lqb0QHTDqmDKBFaJ28OcDDRaKAm2EF11YP1qs8TC7NueSQFHZ3iQGUTLMUyZMqg==}
+  '@enbox/agent@0.6.1':
+    resolution: {integrity: sha512-PAGjpmTUCgWSDuKA56eGWaw6rxX/LiPxZoZD2nDtDEAyLMI7iPUYf46zclABnLyMGTWkOJVBqY/Dbbfm/HuVuA==}
     engines: {bun: '>=1.0.0'}
 
-  '@enbox/api@0.6.12':
-    resolution: {integrity: sha512-PpTfZcjIkGCFGQWlYiGmVbzws+3UlfE353zDllxbY75DsXNztQWKFnt8uA3ZcfHvejha+gnv6DSozxtgLVwNlg==}
+  '@enbox/api@0.6.13':
+    resolution: {integrity: sha512-OEXgL9ZgixMau/GwKUN28TqMhFpNscn5FO5sap9MS+NVGg/kPz5C/IRnx7zx/Frxb4MzyJKxbecLsLm/PciuYg==}
     engines: {bun: '>=1.0.0'}
 
-  '@enbox/auth@0.6.20':
-    resolution: {integrity: sha512-eV+9w2a69IRjIVGqW9UhYQZ5fVG1PyFuBtX6n+yhm7cPRmnJkiAJbDbXviRoUgKJtCULOA+FTmIk7zRnJ0itOQ==}
+  '@enbox/auth@0.6.21':
+    resolution: {integrity: sha512-4CEmcOprE24XZ/edqHFW6EYe2d8oDUmZUM0nZ7HNsAqgTKgCLUDVgeKfv3hgm2nKzgFiX+c9GevWQAkd75ECMA==}
     engines: {bun: '>=1.0.0'}
 
-  '@enbox/browser@0.1.24':
-    resolution: {integrity: sha512-Y6ksOHh6hANSOCR8bi5ORvpxcG0fxYNBE12RUk9yDO1JxTxvF5KqVL7YXtTY5TSgwGwYQJGE2z8aPOfAkD3QTQ==}
+  '@enbox/browser@0.1.25':
+    resolution: {integrity: sha512-Z5kqGUla9+8762x6mXF74Y2rc31ww3vRd1kYEBqUh/dXq7H2lRQVUdCw8wL1YOcxQWG4etzk1ohAy9JMD8KrSw==}
 
   '@enbox/common@0.1.0':
     resolution: {integrity: sha512-rb4Fpz+vrPhDCFm93DfufV1PMztzNRztVeY/4DkXd0mUY3/5AE5EsCChmGL042m1GDlUtUL8O0jcOt+Zg5VbSA==}
@@ -5122,7 +5122,7 @@ snapshots:
       '@leichtgewicht/ip-codec': 2.0.5
       utf8-codec: 1.0.0
 
-  '@enbox/agent@0.6.0':
+  '@enbox/agent@0.6.1':
     dependencies:
       '@enbox/common': 0.1.0
       '@enbox/crypto': 0.1.0
@@ -5139,19 +5139,19 @@ snapshots:
       - encoding
       - supports-color
 
-  '@enbox/api@0.6.12':
+  '@enbox/api@0.6.13':
     dependencies:
-      '@enbox/agent': 0.6.0
-      '@enbox/auth': 0.6.20
+      '@enbox/agent': 0.6.1
+      '@enbox/auth': 0.6.21
       '@enbox/common': 0.1.0
       '@enbox/dwn-clients': 0.3.0
     transitivePeerDependencies:
       - encoding
       - supports-color
 
-  '@enbox/auth@0.6.20':
+  '@enbox/auth@0.6.21':
     dependencies:
-      '@enbox/agent': 0.6.0
+      '@enbox/agent': 0.6.1
       '@enbox/common': 0.1.0
       '@enbox/crypto': 0.1.0
       '@enbox/dids': 0.1.0
@@ -5162,10 +5162,10 @@ snapshots:
       - encoding
       - supports-color
 
-  '@enbox/browser@0.1.24':
+  '@enbox/browser@0.1.25':
     dependencies:
-      '@enbox/agent': 0.6.0
-      '@enbox/auth': 0.6.20
+      '@enbox/agent': 0.6.1
+      '@enbox/auth': 0.6.21
       '@enbox/dids': 0.1.0
     transitivePeerDependencies:
       - encoding
