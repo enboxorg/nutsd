@@ -22,6 +22,8 @@ interface EnboxContextProps {
   isConnecting: boolean;
   /** Whether a session is active. */
   isConnected: boolean;
+  /** Whether the current session is delegated via wallet-connect. */
+  isDelegate: boolean;
   /**
    * Create a new local DID (owner identity with X25519 encryption keys).
    */
@@ -39,6 +41,7 @@ interface EnboxContextProps {
 export const EnboxContext = createContext<EnboxContextProps>({
   isConnecting        : false,
   isConnected         : false,
+  isDelegate          : false,
   connectLocal        : () => Promise.reject(new Error('EnboxProvider not mounted')),
   connectWallet       : () => Promise.reject(new Error('EnboxProvider not mounted')),
   disconnect          : () => Promise.reject(new Error('EnboxProvider not mounted')),
@@ -53,6 +56,7 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const authRef = useRef<AuthManager | null>(null);
   const [enbox, setEnbox] = useState<Enbox | undefined>();
   const [did, setDid] = useState<string | undefined>();
+  const [isDelegate, setIsDelegate] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [recoveryPhrase, setRecoveryPhrase] = useState<string | undefined>();
 
@@ -73,6 +77,7 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const api = Enbox.connect({ session });
     setEnbox(api);
     setDid(session.did);
+    setIsDelegate(Boolean(session.delegateDid));
     if (session.recoveryPhrase) {
       setRecoveryPhrase(session.recoveryPhrase);
     }
@@ -148,6 +153,7 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     await auth.disconnect({ clearStorage: options?.clearStorage });
     setEnbox(undefined);
     setDid(undefined);
+    setIsDelegate(false);
     setRecoveryPhrase(undefined);
 
     if (options?.clearStorage) {
@@ -168,6 +174,7 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         did,
         isConnecting,
         isConnected,
+        isDelegate,
         connectLocal,
         connectWallet,
         disconnect,

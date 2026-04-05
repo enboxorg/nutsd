@@ -81,7 +81,7 @@ export interface WalletPreferences {
 type Repo = any;
 
 export function useWallet() {
-  const { enbox, isConnected } = useEnbox();
+  const { enbox, isConnected, isDelegate } = useEnbox();
 
   const [repo, setRepo] = useState<Repo>(null);
   const typedRef = useRef<any>(null);
@@ -100,10 +100,15 @@ export function useWallet() {
       typedRef.current = typed;
       const r = repository(typed);
       setRepo(r);
-      // Install protocol on the local DWN (idempotent if already installed)
-      r.configure().catch((err: unknown) =>
-        console.warn('[nutsd] Protocol configure (may already exist):', err),
-      );
+      // For local owner sessions, eagerly install the protocol on the local DWN.
+      // For delegated sessions, let TypedEnbox auto-configure lazily from the
+      // owner's remote protocol definition so the local install includes the
+      // owner's `$encryption` keys.
+      if (!isDelegate) {
+        r.configure().catch((err: unknown) =>
+          console.warn('[nutsd] Protocol configure (may already exist):', err),
+        );
+      }
     } else {
       typedRef.current = null;
       setRepo(null);
@@ -112,7 +117,7 @@ export function useWallet() {
       setTransactions([]);
       setPreferences({});
     }
-  }, [enbox, isConnected]);
+  }, [enbox, isConnected, isDelegate]);
 
   // --- Refresh functions ---
 
