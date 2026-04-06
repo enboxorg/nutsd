@@ -45,6 +45,7 @@ import {
 } from '@/cashu/wallet-ops';
 import { generateP2pkKeyPair, receiveP2pkLocked, type P2pkKeyPair } from '@/cashu/p2pk';
 import { recoverStashes, type RecoveryDeps } from '@/cashu/proof-stash-recovery';
+import { resumePendingSwap, type PendingSwapState } from '@/cashu/cross-mint-swap';
 import { acquireWalletLock } from '@/lib/wallet-mutex';
 
 // ---------------------------------------------------------------------------
@@ -1045,20 +1046,67 @@ export function useWallet() {
     return result.proofsRecovered > 0;
   }, [repo, mints, addMint, addProof]);
 
+  /**
+   * Resume any pending cross-mint swaps (second leg: mint at trusted mint).
+   * Scans transactions for status='pending' + type='swap' with PendingSwapState in memo.
+   */
+  const resumePendingSwaps = useCallback(async () => {
+    if (!repo) return;
+    try {
+      const { records } = await repo.transaction.query();
+      if (!records) return;
+
+      for (const record of records) {
+        try {
+          const tx: TransactionData = await record.data.json();
+          if (tx.status !== 'pending' || tx.type !== 'swap' || !tx.memo) continue;
+
+          let swapState: PendingSwapState;
+          try { swapState = JSON.parse(tx.memo); } catch { continue; }
+          if (!swapState.trustedMintQuoteId || !swapState.trustedMintUrl) continue;
+
+          console.log(`[nutsd] Resuming pending swap: quote ${swapState.trustedMintQuoteId}`);
+          const newProofs = await resumePendingSwap(swapState);
+
+          if (newProofs.length > 0) {
+            const mint = mints.find(m => m.url === swapState.trustedMintUrl);
+            if (mint) {
+              await safeStoreReceivedProofs(
+                mint.contextId, mint.url, mint.unit,
+                newProofs.map(p => ({
+                  amount: p.amount, id: p.id, secret: p.secret, C: p.C, state: 'unspent' as const,
+                })),
+              );
+            }
+            // Mark transaction as completed
+            await record.update({ data: { ...tx, status: 'completed', memo: `Swap resumed: ${newProofs.length} proofs minted` } });
+            console.log(`[nutsd] Pending swap completed: ${newProofs.length} proofs`);
+          }
+        } catch (err) {
+          // Leave for next startup — the quote may still settle
+          console.warn('[nutsd] Pending swap resume failed (will retry):', err);
+        }
+      }
+    } catch (err) {
+      console.error('[nutsd] Pending swap scan failed:', err);
+    }
+  }, [repo, mints, safeStoreReceivedProofs]);
+
   // Wire startup recovery ref — called by the mints-dependent effect above
   // AFTER proofs are loaded. The loaded proofs are passed directly to avoid
   // depending on React state (setProofs is async and may not have committed).
   useEffect(() => {
     startupRecoveryRef.current = async (freshProofs: StoredProof[]) => {
       const stashResult = await recoverProofStashes();
-      // If stash recovery wrote new proofs, re-load so reconciliation sees them.
-      // Otherwise use the pre-loaded snapshot (avoids an extra DWN round-trip).
+      // Resume any pending cross-mint swaps (second leg).
+      await resumePendingSwaps();
+      // If stash recovery or swap resume wrote new proofs, re-load.
       const proofsForReconciliation = stashResult
         ? await refreshProofs()
         : freshProofs;
       await reconcilePendingProofs(proofsForReconciliation);
     };
-  }, [recoverProofStashes, refreshProofs, reconcilePendingProofs]);
+  }, [recoverProofStashes, resumePendingSwaps, refreshProofs, reconcilePendingProofs]);
 
   // =========================================================================
   // Transaction CRUD

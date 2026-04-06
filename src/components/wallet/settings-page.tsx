@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { XIcon, SettingsIcon, KeyIcon, CopyIcon, CheckIcon } from 'lucide-react';
-import { toastSuccess, truncateMintUrl, getUnitSymbol } from '@/lib/utils';
+import { toastSuccess, truncateMintUrl } from '@/lib/utils';
 import type { Mint, WalletPreferences } from '@/hooks/use-wallet';
 import type { P2pkKeyPair } from '@/cashu/p2pk';
 
@@ -22,13 +22,13 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   onClose,
 }) => {
   const [defaultMint, setDefaultMint] = useState(preferences.defaultMintUrl ?? '');
-  const [displayCurrency, setDisplayCurrency] = useState(preferences.displayCurrency ?? 'sat');
+  // displayCurrency disabled until exchange rate layer exists
+  // const [displayCurrency, setDisplayCurrency] = useState(preferences.displayCurrency ?? 'sat');
   const [copied, setCopied] = useState<string | null>(null);
 
   const handleSave = async () => {
     await onUpdatePreferences({
       defaultMintUrl: defaultMint || undefined,
-      displayCurrency: displayCurrency || undefined,
     });
     toastSuccess('Settings saved');
   };
@@ -76,25 +76,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           </p>
         </section>
 
-        {/* Display Currency */}
-        <section className="space-y-2">
-          <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Display Currency</h3>
-          <div className="flex flex-wrap gap-2">
-            {['sat', 'usd', 'eur', 'gbp', 'btc'].map(u => (
-              <button
-                key={u}
-                onClick={() => setDisplayCurrency(u)}
-                className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
-                  displayCurrency === u
-                    ? 'bg-primary text-primary-foreground'
-                    : 'bg-muted text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                {getUnitSymbol(u)} {u.toUpperCase()}
-              </button>
-            ))}
-          </div>
-        </section>
+        {/* Display Currency — disabled until exchange rate fetching is implemented.
+            Without a real conversion layer, this would label sat balances as fiat
+            amounts (e.g. showing 1000 sat as "$1,000.00"), which is misleading.
+            The preference field exists in the data model for future use. */}
 
         {/* Identity */}
         <section className="space-y-2">

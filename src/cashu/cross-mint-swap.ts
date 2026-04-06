@@ -104,25 +104,42 @@ export async function estimateCrossMintSwap(
   const lightningFee = prelimMeltQuote.fee_reserve;
   const receiveAmount = Math.max(1, tokenAmount - lightningFee);
 
-  // Step 3: If the preliminary amount was wrong, get a corrected mint quote.
+  // Step 3: Get corrected quotes and verify funding.
+  // Iterate: corrected invoice amount may yield a different routing fee.
+  // Converge within 3 rounds (fees are stable for similar amounts).
   let mintQuote: MintQuoteBolt11Response;
   let meltQuote: MeltQuoteBolt11Response;
+  let currentReceive = receiveAmount;
 
-  if (receiveAmount !== prelimReceive) {
-    mintQuote = await createMintQuote(trustedMintUrl, receiveAmount, unit);
+  for (let i = 0; i < 3; i++) {
+    mintQuote = await createMintQuote(trustedMintUrl, currentReceive, unit);
     meltQuote = await createMeltQuote(foreignMintUrl, mintQuote.request, unit);
-  } else {
-    mintQuote = prelimMintQuote;
-    meltQuote = prelimMeltQuote;
+
+    // Verify: can we actually fund this melt?
+    // meltQuote.amount = invoice amount, meltQuote.fee_reserve = routing fee
+    const totalNeeded = meltQuote.amount + meltQuote.fee_reserve;
+    if (totalNeeded <= tokenAmount) {
+      // Funded correctly — return this estimate.
+      return {
+        receiveAmount : currentReceive,
+        lightningFee  : meltQuote.fee_reserve,
+        totalFee      : tokenAmount - currentReceive,
+        mintQuote     : mintQuote!,
+        meltQuote     : meltQuote!,
+      };
+    }
+
+    // Underfunded — reduce receiveAmount by the shortfall and retry.
+    const shortfall = totalNeeded - tokenAmount;
+    currentReceive = Math.max(1, currentReceive - shortfall);
   }
 
-  return {
-    receiveAmount,
-    lightningFee : meltQuote.fee_reserve,
-    totalFee     : tokenAmount - receiveAmount,
-    mintQuote,
-    meltQuote,
-  };
+  // If we still can't converge, fail clearly.
+  throw new Error(
+    `Cross-mint swap fee estimation did not converge after 3 rounds. ` +
+    `Token amount: ${tokenAmount}, last attempt needed: ${meltQuote!.amount + meltQuote!.fee_reserve}. ` +
+    `The Lightning routing fee may be too high for this swap.`,
+  );
 }
 
 // ---------------------------------------------------------------------------

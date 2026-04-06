@@ -586,9 +586,13 @@ function WalletHome() {
               </div>
             )}
 
+            {/* unit is the actual denomination of the proofs, NOT a display preference.
+                displayCurrency requires an exchange rate layer to convert — without it,
+                showing sat balances as "$1,000.00" would be actively misleading.
+                The per-unit breakdown in unitBalances handles multi-unit mints correctly. */}
             <BalanceCard
               totalBalance={totalBalance}
-              unit={preferences.displayCurrency || 'sat'}
+              unit="sat"
               mintCount={mints.length}
               unitBalances={unitBalances}
             />
