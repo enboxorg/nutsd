@@ -18,6 +18,8 @@ import { WithdrawDialog } from '@/components/wallet/withdraw-dialog';
 import { SendDialog } from '@/components/wallet/send-dialog';
 import { ReceiveDialog } from '@/components/wallet/receive-dialog';
 import { RecoveryPhraseDialog } from '@/components/connect/recovery-phrase-dialog';
+import { LnurlWithdrawDialog } from '@/components/wallet/lnurl-withdraw-dialog';
+import { TransactionHistory } from '@/components/wallet/transaction-history';
 import { Toaster } from 'sonner';
 
 import { QrScanner } from '@/components/wallet/qr-scanner';
@@ -78,6 +80,8 @@ function WalletHome() {
   const [showReceive, setShowReceive] = useState(false);
   const [selectedMint, setSelectedMint] = useState<Mint | null>(null);
   const [showScanner, setShowScanner] = useState(false);
+  const [showLnurlPay, setShowLnurlPay] = useState<{ target: string; type: 'lightning-address' | 'lnurl' } | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
 
   const hasMints = mints.length > 0;
 
@@ -210,6 +214,12 @@ function WalletHome() {
       case 'lightning-invoice':
         setShowWithdraw(true);
         break;
+      case 'lnurl':
+        setShowLnurlPay({ target: detected.value, type: 'lnurl' });
+        break;
+      case 'lightning-address':
+        setShowLnurlPay({ target: detected.value, type: 'lightning-address' });
+        break;
       case 'mint-url':
         setShowAddMint(true);
         break;
@@ -339,6 +349,7 @@ function WalletHome() {
               onCashuToken={(token) => handleScanResult(token)}
               onLightningInvoice={() => setShowWithdraw(true)}
               onMintUrl={() => setShowAddMint(true)}
+              onLnurlOrAddress={(value, type) => setShowLnurlPay({ target: value, type })}
               onScanQr={() => setShowScanner(true)}
               disabled={!hasMints}
             />
@@ -352,6 +363,7 @@ function WalletHome() {
 
             <TransactionListCard
               transactions={transactions}
+              onViewAll={() => setShowHistory(true)}
               onCheckTokenSpent={handleCheckTokenSpent}
               onReclaimToken={handleReclaimToken}
             />
@@ -414,6 +426,28 @@ function WalletHome() {
         <QrScanner
           onScan={(value) => { setShowScanner(false); handleScanResult(value); }}
           onClose={() => setShowScanner(false)}
+        />
+      )}
+      {showLnurlPay && hasMints && (
+        <LnurlWithdrawDialog
+          target={showLnurlPay.target}
+          targetType={showLnurlPay.type}
+          mints={mints}
+          mintBalances={mintBalances}
+          getUnspentProofs={getUnspentProofsForMint}
+          keysetFeeMap={keysetFeeMap}
+          onClose={() => setShowLnurlPay(null)}
+          onNewProofs={storeNewProofs}
+          onOldProofsSpent={removeProofsByIds}
+          onMarkPending={markProofsPending}
+          onTransactionCreated={recordTransaction}
+        />
+      )}
+      {showHistory && (
+        <TransactionHistory
+          transactions={transactions}
+          mints={mints}
+          onClose={() => setShowHistory(false)}
         />
       )}
     </div>
