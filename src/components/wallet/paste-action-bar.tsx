@@ -10,6 +10,8 @@ interface PasteActionBarProps {
   onLightningInvoice: (invoice: string) => void;
   /** Route a detected mint URL to the add-mint flow. */
   onMintUrl: (url: string) => void;
+  /** Route a detected LNURL or Lightning address to the pay flow. */
+  onLnurlOrAddress?: (value: string, type: 'lightning-address' | 'lnurl') => void;
   /** Open the QR scanner. */
   onScanQr: () => void;
   disabled?: boolean;
@@ -26,6 +28,7 @@ export const PasteActionBar: React.FC<PasteActionBarProps> = ({
   onCashuToken,
   onLightningInvoice,
   onMintUrl,
+  onLnurlOrAddress,
   onScanQr,
   disabled,
 }) => {
@@ -68,13 +71,15 @@ export const PasteActionBar: React.FC<PasteActionBarProps> = ({
         break;
       case 'lnurl':
       case 'lightning-address':
-        // LNURL and Lightning addresses need LNURL-pay resolution (Phase 2).
-        // For now, show a helpful message.
-        toastError('Not yet supported', new Error(
-          detected.type === 'lnurl'
-            ? 'LNURL support is coming in a future update.'
-            : `Lightning address (${detected.value}) support is coming in a future update.`,
-        ));
+        if (onLnurlOrAddress) {
+          onLnurlOrAddress(detected.value, detected.type);
+        } else {
+          toastError('Not yet supported', new Error(
+            detected.type === 'lnurl'
+              ? 'LNURL support is coming in a future update.'
+              : `Lightning address (${detected.value}) support is coming in a future update.`,
+          ));
+        }
         break;
       case 'mint-url':
         onMintUrl(detected.value);
