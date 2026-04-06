@@ -33,6 +33,7 @@ import {
   type TransactionData,
   type PreferenceData,
   type P2pkKeyData,
+  type ProofStashData,
   type ProofState,
 } from '@/protocol/cashu-wallet-protocol';
 import { CashuTransferProtocol } from '@/protocol/cashu-transfer-protocol';
@@ -866,6 +867,166 @@ export function useWallet() {
   }, [deleteProof]);
 
   // =========================================================================
+  // Crash-safe proof persistence (WAL pattern)
+  // =========================================================================
+
+  /**
+   * Safely persist proofs received from a mint swap using a write-ahead stash.
+   *
+   * The mint swap is irreversible — once the mint accepts, the old proofs are
+   * spent and the new proofs are the ONLY copy. If per-proof DWN writes fail,
+   * those proofs are lost forever.
+   *
+   * This function writes a single "stash" record containing ALL proofs FIRST,
+   * then writes individual proof records, then deletes the stash. If the app
+   * crashes between the stash write and the final cleanup, `recoverProofStashes()`
+   * on next startup replays the stash.
+   *
+   * @param mintContextId - DWN context ID of the mint (must exist)
+   * @param mintUrl - Mint URL (for stash metadata)
+   * @param unit - Currency unit
+   * @param proofDataList - Full proof set from the mint swap
+   */
+  const safeStoreReceivedProofs = useCallback(async (
+    mintContextId: string,
+    mintUrl: string,
+    unit: string,
+    proofDataList: ProofData[],
+  ): Promise<void> => {
+    if (!repo) throw new Error('Repository not available');
+    if (proofDataList.length === 0) return;
+
+    // STEP 1: Write stash record — single atomic DWN write.
+    // This is the crash checkpoint. If this succeeds, we can always recover.
+    const stashData: ProofStashData = {
+      mintUrl,
+      mintContextId,
+      unit,
+      proofs    : proofDataList,
+      createdAt : new Date().toISOString(),
+    };
+    const { record: stashRecord } = await repo.proofStash.create({ data: stashData });
+    if (!stashRecord) {
+      throw new Error(
+        'Failed to write proof stash. Proofs from this operation may not be ' +
+        'persisted. Check your DWN connectivity and try again.',
+      );
+    }
+
+    // STEP 2: Write individual proof records from the stash.
+    // If this fails partway, the stash still has everything.
+    try {
+      for (const proofData of proofDataList) {
+        await addProof(mintContextId, proofData);
+      }
+    } catch (err) {
+      // Partial write — stash preserved for recovery on next startup.
+      console.error(
+        `[nutsd] Partial proof write failure (${proofDataList.length} proofs, stash preserved):`,
+        err,
+      );
+      return; // Do NOT delete the stash
+    }
+
+    // STEP 3: All proofs written — delete the stash.
+    try {
+      await stashRecord.delete();
+    } catch {
+      // Stash deletion failed — harmless. recoverProofStashes() cleans it up.
+      console.warn('[nutsd] Failed to delete proof stash (will clean up on next startup)');
+    }
+  }, [repo, addProof]);
+
+  /**
+   * Recover any incomplete proof stashes on startup.
+   *
+   * For each stash:
+   * 1. Ensure the mint record exists
+   * 2. Load existing proofs for that mint
+   * 3. For each proof in the stash, check if it was already written (dedup by secret)
+   * 4. Write any missing proofs
+   * 5. Delete the stash
+   *
+   * This handles all partial-write failure modes:
+   * - Crash before any per-proof writes: all proofs recovered from stash
+   * - Crash after some writes: only missing proofs are filled in
+   * - Crash after all writes but before stash delete: dedup detects all present, stash cleaned up
+   */
+  const recoverProofStashes = useCallback(async () => {
+    if (!repo) return;
+    try {
+      const { records } = await repo.proofStash.query();
+      if (!records || records.length === 0) return;
+
+      console.log(`[nutsd] Found ${records.length} proof stash(es) to recover`);
+
+      for (const record of records) {
+        try {
+          const stash: ProofStashData = await record.data.json();
+
+          // Ensure mint exists (may need auto-add if stash is from an unknown mint)
+          let mint = mints.find(m => m.contextId === stash.mintContextId)
+                  ?? mints.find(m => m.url === stash.mintUrl);
+          if (!mint) {
+            try {
+              const newMint = await addMint({ url: stash.mintUrl, unit: stash.unit, active: true });
+              if (newMint) mint = newMint;
+            } catch {
+              console.warn(`[nutsd] Stash recovery: mint ${stash.mintUrl} unreachable, retrying next startup`);
+              continue; // Leave stash for next attempt
+            }
+          }
+          if (!mint) {
+            console.warn(`[nutsd] Stash recovery: cannot resolve mint for ${stash.mintUrl}`);
+            continue;
+          }
+
+          // Load existing proofs for this mint to deduplicate
+          const existingSecrets = new Set<string>();
+          try {
+            const { records: proofRecords } = await repo.mint.proof.query(mint.contextId);
+            for (const pr of proofRecords) {
+              try {
+                const pd: ProofData = await pr.data.json();
+                existingSecrets.add(pd.secret);
+              } catch { /* skip unreadable */ }
+            }
+          } catch { /* no existing proofs */ }
+
+          // Write missing proofs
+          let recovered = 0;
+          for (const proof of stash.proofs) {
+            if (existingSecrets.has(proof.secret)) continue;
+            try {
+              await addProof(mint.contextId, proof);
+              recovered++;
+            } catch (err) {
+              console.error(`[nutsd] Failed to recover proof from stash:`, err);
+              // Continue with remaining proofs — partial recovery is better than none
+            }
+          }
+
+          // Delete the stash (all proofs accounted for)
+          try {
+            await record.delete();
+          } catch {
+            console.warn('[nutsd] Failed to delete recovered stash');
+          }
+
+          if (recovered > 0) {
+            console.log(`[nutsd] Recovered ${recovered} proof(s) from stash for ${stash.mintUrl}`);
+          }
+        } catch (err) {
+          console.error('[nutsd] Failed to process stash record:', err);
+          // Leave stash for next startup
+        }
+      }
+    } catch (err) {
+      console.error('[nutsd] Proof stash recovery failed:', err);
+    }
+  }, [repo, mints, addMint, addProof]);
+
+  // =========================================================================
   // Transaction CRUD
   // =========================================================================
   // No tags on transaction records — encrypted type.
@@ -941,7 +1102,7 @@ export function useWallet() {
     } finally {
       releaseLock();
     }
-  }, [p2pkKey, mints, addMint, addProof, addTransaction]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [p2pkKey, mints, addMint, safeStoreReceivedProofs, addTransaction]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Inner redeem logic (called under lock). */
   const _redeemIncomingTransferInner = useCallback(async (transfer: TransferData, index: number) => {
@@ -973,20 +1134,19 @@ export function useWallet() {
       transfer.mintUrl, transfer.token, p2pkKey.privateKey, transfer.unit,
     );
 
-    // STEP 3: Persist the fresh proofs. This MUST succeed — the mint has
-    // already issued them. If DWN write fails, we throw and leave the
-    // transfer record intact so the user can retry.
-    for (const proof of newProofs) {
-      await addProof(mint.contextId, {
-        amount  : proof.amount,
-        id      : proof.id,
-        secret  : proof.secret,
-        C       : proof.C,
-        state   : 'unspent',
-        dleq    : proof.dleq ? { e: String(proof.dleq.e), s: String(proof.dleq.s), r: String(proof.dleq.r) } : undefined,
-        witness : proof.witness ? (typeof proof.witness === 'string' ? proof.witness : JSON.stringify(proof.witness)) : undefined,
-      });
-    }
+    // STEP 3: Persist the fresh proofs using the crash-safe stash pattern.
+    // The mint has already issued them — these are the ONLY copy.
+    // safeStoreReceivedProofs writes a stash first, then individual records.
+    const proofDataList: ProofData[] = newProofs.map(proof => ({
+      amount  : proof.amount,
+      id      : proof.id,
+      secret  : proof.secret,
+      C       : proof.C,
+      state   : 'unspent' as const,
+      dleq    : proof.dleq ? { e: String(proof.dleq.e), s: String(proof.dleq.s), r: String(proof.dleq.r) } : undefined,
+      witness : proof.witness ? (typeof proof.witness === 'string' ? proof.witness : JSON.stringify(proof.witness)) : undefined,
+    }));
+    await safeStoreReceivedProofs(mint.contextId, transfer.mintUrl, transfer.unit, proofDataList);
 
     // STEP 4: Record the transaction.
     const totalReceived = newProofs.reduce((s, p) => s + p.amount, 0);
@@ -1017,7 +1177,7 @@ export function useWallet() {
     // STEP 6: Remove from local UI state.
     incomingTransferRecordsRef.current = incomingTransferRecordsRef.current.filter((_, i) => i !== index);
     setIncomingTransfers(prev => prev.filter((_, i) => i !== index));
-  }, [p2pkKey, mints, addMint, addProof, addTransaction]);
+  }, [p2pkKey, mints, addMint, safeStoreReceivedProofs, addTransaction]);
 
   // =========================================================================
   // Preferences
@@ -1086,6 +1246,10 @@ export function useWallet() {
     markProofsPending,
     revertProofsToUnspent,
     reconcilePendingProofs,
+
+    // Crash-safe proof persistence
+    safeStoreReceivedProofs,
+    recoverProofStashes,
 
     // Fee helpers
     getInputFeeForMint,

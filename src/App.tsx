@@ -70,7 +70,6 @@ function WalletHome() {
     reconciling,
     addMint,
     removeMint,
-    addProof,
     deleteProofs,
     addTransaction,
     clearTransactionToken,
@@ -78,10 +77,11 @@ function WalletHome() {
     markProofsPending,
     revertProofsToUnspent,
     reconcilePendingProofs,
+    safeStoreReceivedProofs,
+    recoverProofStashes,
     incomingTransfers,
     checkIncomingTransfers,
     redeemIncomingTransfer,
-    proofs,
   } = useWallet();
 
   // Dialog state
@@ -99,22 +99,34 @@ function WalletHome() {
   const hasMints = mints.length > 0;
 
   // --- Startup reconciliation ---
-  // Run once after initial proofs load. Checks all pending proofs with mints.
+  // Run once after initial proofs load. Recovers stashes and reconciles pending proofs.
   const reconciliationDone = useRef(false);
   useEffect(() => {
-    if (!loading && proofs.length > 0 && !reconciliationDone.current) {
+    if (!loading && !reconciliationDone.current) {
       reconciliationDone.current = true;
-      reconcilePendingProofs().catch((err: unknown) =>
-        console.error('[nutsd] Startup reconciliation failed:', err),
-      );
+      // Proof stash recovery runs first — fills in proofs from incomplete receives.
+      // Then pending proof reconciliation checks with mints via NUT-07.
+      recoverProofStashes()
+        .then(() => reconcilePendingProofs())
+        .catch((err: unknown) =>
+          console.error('[nutsd] Startup recovery failed:', err),
+        );
     }
-  }, [loading, proofs, reconcilePendingProofs]);
+  }, [loading, recoverProofStashes, reconcilePendingProofs]);
 
   // --- Proof persistence helpers ---
 
-  /** Store Cashu proofs as DWN records. Preserves all fields (dleq, witness). */
+  /**
+   * Store Cashu proofs as DWN records using the crash-safe stash pattern.
+   *
+   * Writes a single stash record FIRST (crash checkpoint), then individual
+   * proof records, then deletes the stash. If the app crashes between the
+   * stash write and cleanup, `recoverProofStashes()` on next startup fills
+   * in any missing proofs from the stash.
+   */
   const storeNewProofs = useCallback(async (mintContextId: string, cashuProofs: Proof[]) => {
-    for (const proof of cashuProofs) {
+    const mint = mints.find(m => m.contextId === mintContextId);
+    const proofDataList: ProofData[] = cashuProofs.map(proof => {
       const data: ProofData = {
         amount  : proof.amount,
         id      : proof.id,
@@ -122,7 +134,6 @@ function WalletHome() {
         C       : proof.C,
         state   : 'unspent',
       };
-      // Preserve optional NUT-12 DLEQ proof and NUT-10/11 witness
       if (proof.dleq) {
         data.dleq = {
           e: String(proof.dleq.e),
@@ -131,14 +142,19 @@ function WalletHome() {
         };
       }
       if (proof.witness) {
-        // witness can be string | P2PKWitness | HTLCWitness — serialize to string
         data.witness = typeof proof.witness === 'string'
           ? proof.witness
           : JSON.stringify(proof.witness);
       }
-      await addProof(mintContextId, data);
-    }
-  }, [addProof]);
+      return data;
+    });
+    await safeStoreReceivedProofs(
+      mintContextId,
+      mint?.url ?? '',
+      mint?.unit ?? 'sat',
+      proofDataList,
+    );
+  }, [mints, safeStoreReceivedProofs]);
 
   /** Store proofs, auto-adding the mint if unknown. */
   const storeNewProofsForMintUrl = useCallback(async (
