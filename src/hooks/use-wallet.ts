@@ -1069,18 +1069,38 @@ export function useWallet() {
           const newProofs = await resumePendingSwap(swapState);
 
           if (newProofs.length > 0) {
-            const mint = mints.find(m => m.url === swapState.trustedMintUrl);
-            if (mint) {
-              await safeStoreReceivedProofs(
-                mint.contextId, mint.url, mint.unit,
-                newProofs.map(p => ({
-                  amount: p.amount, id: p.id, secret: p.secret, C: p.C, state: 'unspent' as const,
-                })),
-              );
+            // CRITICAL: Ensure the trusted mint exists BEFORE persisting proofs.
+            // mints[] may be empty on cold start. Auto-add if needed.
+            let mint = mints.find(m => m.url === swapState.trustedMintUrl);
+            if (!mint) {
+              try {
+                const added = await addMint({ url: swapState.trustedMintUrl, unit: swapState.unit, active: true });
+                if (added) mint = added;
+              } catch {
+                // Mint unreachable — do NOT mark completed. Leave pending for next startup.
+                console.warn(`[nutsd] Swap resume: trusted mint ${swapState.trustedMintUrl} unreachable, preserving pending state`);
+                continue;
+              }
             }
-            // Mark transaction as completed
+            if (!mint) {
+              // Still no mint — do NOT mark completed. Proofs would be lost.
+              console.warn(`[nutsd] Swap resume: cannot resolve trusted mint, preserving pending state`);
+              continue;
+            }
+
+            await safeStoreReceivedProofs(
+              mint.contextId, mint.url, mint.unit,
+              newProofs.map(p => ({
+                amount: p.amount, id: p.id, secret: p.secret, C: p.C, state: 'unspent' as const,
+              })),
+            );
             await record.update({ data: { ...tx, status: 'completed', memo: `Swap resumed: ${newProofs.length} proofs minted` } });
             console.log(`[nutsd] Pending swap completed: ${newProofs.length} proofs`);
+          } else {
+            // resumePendingSwap returned empty proofs — quote was ISSUED (already
+            // minted by another session). Mark completed so it doesn't retry forever.
+            await record.update({ data: { ...tx, status: 'completed', memo: 'Swap already completed (ISSUED)' } });
+            console.log(`[nutsd] Pending swap already completed (ISSUED): ${swapState.trustedMintQuoteId}`);
           }
         } catch (err) {
           // Leave for next startup — the quote may still settle
