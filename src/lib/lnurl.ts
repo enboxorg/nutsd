@@ -169,7 +169,7 @@ async function fetchLnurlPay(url: string): Promise<LnurlPayResponse> {
  * LNURL uses bech32 encoding with HRP "lnurl". The data portion
  * is the UTF-8 URL.
  */
-function decodeLnurl(lnurl: string): string {
+export function decodeLnurl(lnurl: string): string {
   const lower = lnurl.toLowerCase();
   if (!lower.startsWith('lnurl1')) {
     throw new Error('Invalid LNURL: must start with lnurl1');

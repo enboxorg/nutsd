@@ -1,4 +1,6 @@
+import { useState, useEffect } from 'react';
 import { formatAmount } from '@/lib/utils';
+import { getBtcPrice, satsToFiat, formatFiat } from '@/lib/exchange-rate';
 
 interface BalanceCardProps {
   totalBalance: number;
@@ -14,6 +16,32 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
   mintCount,
   unitBalances,
 }) => {
+  const [fiatEquiv, setFiatEquiv] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Clear stale fiat immediately when inputs change.
+    setFiatEquiv(null);
+
+    if (unit !== 'sat' && unit !== 'msat') return;
+    if (totalBalance <= 0) return;
+
+    // Guard against stale async resolution: if the effect re-runs before
+    // the fetch resolves, the old promise's setFiatEquiv is a no-op.
+    let cancelled = false;
+
+    getBtcPrice().then(() => {
+      if (cancelled) return;
+      const usd = satsToFiat(totalBalance, 'usd');
+      if (usd !== null) {
+        setFiatEquiv(formatFiat(usd, 'usd'));
+      }
+    }).catch(() => {
+      // Price fetch failed — fiatEquiv stays null (already cleared above)
+    });
+
+    return () => { cancelled = true; };
+  }, [totalBalance, unit]);
+
   return (
     <div className="relative overflow-hidden rounded-xl bg-card border border-border p-6">
       {/* Subtle gradient overlay */}
@@ -31,6 +59,9 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
         <div className="amount-display text-4xl font-bold text-foreground tracking-tight">
           {formatAmount(totalBalance, unit)}
         </div>
+        {fiatEquiv && (
+          <p className="text-xs text-muted-foreground">{fiatEquiv}</p>
+        )}
         <div className="text-xs text-muted-foreground">
           across {mintCount} {mintCount === 1 ? 'mint' : 'mints'}
         </div>

@@ -67,7 +67,11 @@ export const QrScanner: React.FC<QrScannerProps> = ({ onScan, onClose }) => {
         } else {
           // Fallback: no native barcode detection available
           // Use a simple polling approach — the user can paste instead
-          setError('QR scanning requires Chrome, Edge, or Samsung Internet. Use paste instead.');
+          setError(
+            'QR scanning is not supported in this browser. ' +
+            'Try Chrome, Edge, or Samsung Internet for camera scanning. ' +
+            'You can also paste the content directly using the paste field below the main screen.',
+          );
         }
       } catch (err) {
         if (!cancelled) {

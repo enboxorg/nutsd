@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Loader2Icon, XIcon, ZapIcon, CopyIcon, CheckIcon, ChevronDownIcon } from 'lucide-react';
 import { toastError, toastSuccess, truncateMintUrl } from '@/lib/utils';
 import { createMintQuote, checkMintQuote, mintTokens } from '@/cashu/wallet-ops';
+import { isDleqValid } from '@/cashu/dleq-verify';
 import { subscribeToQuote } from '@/lib/mint-ws';
 import { QRCodeDisplay } from '@/components/qr-code';
 import { DialogWrapper } from '@/components/ui/dialog-wrapper';
@@ -132,6 +133,9 @@ export const DepositDialog: React.FC<DepositDialogProps> = ({
             try {
               const proofs = await mintTokens(mintUrl, amountNum, quoteId, mintUnit);
               if (!mountedRef.current) return;
+              if (!isDleqValid(proofs)) {
+                console.warn('[nutsd:financial] DLEQ verification failed on minted proofs');
+              }
               await onProofsReceived(mintCtx, proofs);
               await onTransactionCreated({
                 type   : 'mint',
