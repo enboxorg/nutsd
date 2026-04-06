@@ -12,8 +12,10 @@ import type { TransactionData } from '@/protocol/cashu-wallet-protocol';
 interface PayRequestDialogProps {
   encodedRequest: string;
   mints: Mint[];
-  mintBalances: Map<string, number>;
-  getUnspentProofs: (mintUrl: string) => StoredProof[];
+  /** Balances keyed by mint contextId (not URL) for multi-unit correctness. */
+  mintBalancesByContext: Map<string, number>;
+  /** Get unspent proofs by mint contextId (not URL) for multi-unit correctness. */
+  getUnspentProofsByContext: (mintContextId: string) => StoredProof[];
   onClose: () => void;
   onNewProofs: (mintContextId: string, proofs: Proof[]) => Promise<void>;
   onOldProofsSpent: (ids: string[]) => Promise<void>;
@@ -24,7 +26,7 @@ interface PayRequestDialogProps {
 type Step = 'confirm' | 'sending' | 'done' | 'error';
 
 export const PayRequestDialog: React.FC<PayRequestDialogProps> = ({
-  encodedRequest, mints, mintBalances, getUnspentProofs,
+  encodedRequest, mints, mintBalancesByContext, getUnspentProofsByContext,
   onClose, onNewProofs, onOldProofsSpent, onMarkPending, onTransactionCreated,
 }) => {
   const [step, setStep] = useState<Step>('confirm');
@@ -62,7 +64,7 @@ export const PayRequestDialog: React.FC<PayRequestDialogProps> = ({
   const [customAmount, setCustomAmount] = useState('');
   const isOpenAmount = !request.amount || request.amount <= 0;
   const amount = isOpenAmount ? (parseInt(customAmount) || 0) : (request.amount ?? 0);
-  const balance = matchingMint ? (mintBalances.get(matchingMint.url) ?? 0) : 0;
+  const balance = matchingMint ? (mintBalancesByContext.get(matchingMint.contextId) ?? 0) : 0;
 
   const handlePay = async () => {
     if (!matchingMint || busyRef.current || amount <= 0) return;
@@ -77,7 +79,7 @@ export const PayRequestDialog: React.FC<PayRequestDialogProps> = ({
 
     try {
       setStep('sending');
-      const storedProofs = getUnspentProofs(matchingMint.url);
+      const storedProofs = getUnspentProofsByContext(matchingMint.contextId);
       const spentIds = storedProofs.map(p => p.id);
       const cashuProofs: Proof[] = storedProofs.map(p => ({
         amount: p.amount, id: p.keysetId, secret: p.secret, C: p.C,

@@ -545,6 +545,30 @@ export function useWallet() {
     return counts;
   }, [proofs]);
 
+  // --- Context-aware selectors (for multi-unit mint correctness) ---
+  // When the same mint URL exists with multiple units (e.g. sat + usd),
+  // URL-keyed selectors above combine their data. These context-keyed
+  // alternatives give per-mint-record accuracy.
+
+  /** Per-mint-context balance (unspent proofs only). Keyed by contextId. */
+  const mintBalancesByContext = useMemo(() => {
+    const balances = new Map<string, number>();
+    for (const mint of mints) {
+      balances.set(mint.contextId, 0);
+    }
+    for (const proof of proofs) {
+      if (proof.state !== 'unspent') continue;
+      const current = balances.get(proof.mintContextId) ?? 0;
+      balances.set(proof.mintContextId, current + proof.amount);
+    }
+    return balances;
+  }, [mints, proofs]);
+
+  /** Get unspent proofs for a specific mint context. */
+  const getUnspentProofsByContext = useCallback((mintContextId: string): StoredProof[] => {
+    return proofs.filter(p => p.state === 'unspent' && p.mintContextId === mintContextId);
+  }, [proofs]);
+
   /** Number of pending proofs (for UI indicators). */
   const pendingProofCount = useMemo(
     () => proofs.filter(p => p.state === 'pending').length,
@@ -1374,6 +1398,7 @@ export function useWallet() {
     dwnError,
     totalBalance,
     mintBalances,
+    mintBalancesByContext,
     unitBalances,
     proofCountByMint,
     mintFeePpk,
@@ -1398,6 +1423,7 @@ export function useWallet() {
     deleteProofs,
     refreshProofs,
     getUnspentProofsForMint,
+    getUnspentProofsByContext,
 
     // Proof state tracking
     markProofsPending,

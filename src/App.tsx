@@ -67,6 +67,7 @@ function WalletHome() {
     transactions,
     totalBalance,
     mintBalances,
+    mintBalancesByContext,
     unitBalances,
     proofCountByMint,
     mintFeePpk,
@@ -83,6 +84,7 @@ function WalletHome() {
     addTransaction,
     clearTransactionToken,
     getUnspentProofsForMint,
+    getUnspentProofsByContext,
     markProofsPending,
     revertProofsToUnspent,
     safeStoreReceivedProofs,
@@ -782,8 +784,8 @@ function WalletHome() {
         <PayRequestDialog
           encodedRequest={showPayRequest}
           mints={orderedMints}
-          mintBalances={mintBalances}
-          getUnspentProofs={getUnspentProofsForMint}
+          mintBalancesByContext={mintBalancesByContext}
+          getUnspentProofsByContext={getUnspentProofsByContext}
           onClose={() => setShowPayRequest(null)}
           onNewProofs={storeNewProofs}
           onOldProofsSpent={removeProofsByIds}

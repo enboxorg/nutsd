@@ -125,6 +125,92 @@ describe('PayRequestDialog mint matching', () => {
   });
 });
 
+describe('Context-aware balance and proof selectors', () => {
+  /**
+   * Simulates the hook's mintBalancesByContext and getUnspentProofsByContext.
+   * This is the REAL data flow the PayRequestDialog uses — keyed by contextId,
+   * not URL. A URL-keyed selector would combine proofs from different units.
+   */
+  type StoredProof = { mintContextId: string; mintUrl: string; amount: number; state: string };
+
+  const PROOFS: StoredProof[] = [
+    { mintContextId: 'ctx-sat', mintUrl: 'https://mint.example.com', amount: 100, state: 'unspent' },
+    { mintContextId: 'ctx-sat', mintUrl: 'https://mint.example.com', amount: 50,  state: 'unspent' },
+    { mintContextId: 'ctx-usd', mintUrl: 'https://mint.example.com', amount: 10,  state: 'unspent' },
+    { mintContextId: 'ctx-usd', mintUrl: 'https://mint.example.com', amount: 5,   state: 'unspent' },
+  ];
+
+  function getBalanceByContext(contextId: string): number {
+    return PROOFS
+      .filter(p => p.state === 'unspent' && p.mintContextId === contextId)
+      .reduce((s, p) => s + p.amount, 0);
+  }
+
+  function getProofsByContext(contextId: string): StoredProof[] {
+    return PROOFS.filter(p => p.state === 'unspent' && p.mintContextId === contextId);
+  }
+
+  // For comparison: what a URL-keyed selector would (incorrectly) return
+  function getBalanceByUrl(url: string): number {
+    return PROOFS
+      .filter(p => p.state === 'unspent' && p.mintUrl === url)
+      .reduce((s, p) => s + p.amount, 0);
+  }
+
+  it('context-keyed balance returns only the correct unit (sat)', () => {
+    expect(getBalanceByContext('ctx-sat')).toBe(150);
+  });
+
+  it('context-keyed balance returns only the correct unit (usd)', () => {
+    expect(getBalanceByContext('ctx-usd')).toBe(15);
+  });
+
+  it('URL-keyed balance incorrectly combines both units', () => {
+    // This is the bug: URL-keyed returns sat + usd = 165
+    expect(getBalanceByUrl('https://mint.example.com')).toBe(165);
+    // Context-keyed returns the correct per-unit values
+    expect(getBalanceByContext('ctx-sat')).not.toBe(getBalanceByUrl('https://mint.example.com'));
+  });
+
+  it('context-keyed proofs returns only the correct unit', () => {
+    const satProofs = getProofsByContext('ctx-sat');
+    expect(satProofs).toHaveLength(2);
+    expect(satProofs.every(p => p.mintContextId === 'ctx-sat')).toBe(true);
+
+    const usdProofs = getProofsByContext('ctx-usd');
+    expect(usdProofs).toHaveLength(2);
+    expect(usdProofs.every(p => p.mintContextId === 'ctx-usd')).toBe(true);
+  });
+
+  it('end-to-end: payment request for USD gets USD proofs, not SAT', () => {
+    // 1. Match mint by URL + unit
+    const request: PaymentRequest = { amount: 10, unit: 'usd', mints: ['https://mint.example.com'] };
+    const match = matchMintForRequest(MINTS, request);
+    expect(match?.contextId).toBe('ctx-usd');
+    expect(match?.unit).toBe('usd');
+
+    // 2. Get balance and proofs by CONTEXT (not URL)
+    const balance = getBalanceByContext(match!.contextId);
+    expect(balance).toBe(15); // NOT 165
+
+    const proofs = getProofsByContext(match!.contextId);
+    expect(proofs).toHaveLength(2);
+    expect(proofs.every(p => p.mintContextId === 'ctx-usd')).toBe(true);
+  });
+
+  it('end-to-end: payment request for SAT gets SAT proofs, not USD', () => {
+    const request: PaymentRequest = { amount: 100, unit: 'sat', mints: ['https://mint.example.com'] };
+    const match = matchMintForRequest(MINTS, request);
+    expect(match?.contextId).toBe('ctx-sat');
+
+    const balance = getBalanceByContext(match!.contextId);
+    expect(balance).toBe(150);
+
+    const proofs = getProofsByContext(match!.contextId);
+    expect(proofs.every(p => p.mintContextId === 'ctx-sat')).toBe(true);
+  });
+});
+
 describe('CreateRequestDialog mint key uniqueness', () => {
   it('generates unique keys for same URL with different units', () => {
     const satMint = MINTS[0];
