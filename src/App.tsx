@@ -60,7 +60,7 @@ import {
 // ---------------------------------------------------------------------------
 
 function WalletHome() {
-  const { did, disconnect, enbox } = useEnbox();
+  const { did, disconnect, enbox, isDelegateSession } = useEnbox();
   const { theme, setTheme } = useTheme();
   const {
     mints,
@@ -772,6 +772,7 @@ function WalletHome() {
       {showSettings && (
         <SettingsPage
           did={did}
+          isDelegateSession={isDelegateSession}
           mints={mints}
           preferences={preferences}
           p2pkKey={p2pkKey}

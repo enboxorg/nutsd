@@ -1,11 +1,14 @@
 import { useState } from 'react';
-import { XIcon, SettingsIcon, KeyIcon, CopyIcon, CheckIcon } from 'lucide-react';
+import { XIcon, SettingsIcon, KeyIcon, CopyIcon, CheckIcon, LinkIcon } from 'lucide-react';
 import { toastSuccess, truncateMintUrl } from '@/lib/utils';
+import { ExportIdentityDialog } from '@/components/connect/export-identity-dialog';
 import type { Mint, WalletPreferences } from '@/hooks/use-wallet';
 import type { P2pkKeyPair } from '@/cashu/p2pk';
 
 interface SettingsPageProps {
   did?: string;
+  /** Whether the session is delegate-based (wallet-connected) vs local-only. */
+  isDelegateSession?: boolean;
   mints: Mint[];
   preferences: WalletPreferences;
   p2pkKey: P2pkKeyPair | null;
@@ -15,6 +18,7 @@ interface SettingsPageProps {
 
 export const SettingsPage: React.FC<SettingsPageProps> = ({
   did,
+  isDelegateSession,
   mints,
   preferences,
   p2pkKey,
@@ -25,6 +29,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   // displayCurrency disabled until exchange rate layer exists
   // const [displayCurrency, setDisplayCurrency] = useState(preferences.displayCurrency ?? 'sat');
   const [copied, setCopied] = useState<string | null>(null);
+  const [showExportDialog, setShowExportDialog] = useState(false);
 
   const handleSave = async () => {
     await onUpdatePreferences({
@@ -115,6 +120,25 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           )}
         </section>
 
+        {/* Connect Wallet — only shown for local (non-delegate) sessions */}
+        {did && !isDelegateSession && (
+          <section className="space-y-2">
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Wallet</h3>
+            <button
+              onClick={() => setShowExportDialog(true)}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-lg bg-card border border-border text-left hover:bg-muted transition-colors"
+            >
+              <LinkIcon className="h-4 w-4 text-primary shrink-0" />
+              <div>
+                <div className="text-sm font-medium">Connect Wallet</div>
+                <div className="text-xs text-muted-foreground">
+                  Transfer your identity to an external wallet for cross-device access
+                </div>
+              </div>
+            </button>
+          </section>
+        )}
+
         {/* Save button */}
         <button
           onClick={handleSave}
@@ -123,6 +147,11 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           Save Settings
         </button>
       </main>
+
+      <ExportIdentityDialog
+        open={showExportDialog}
+        onClose={() => setShowExportDialog(false)}
+      />
     </div>
   );
 };

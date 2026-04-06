@@ -1,7 +1,10 @@
 import { useState } from 'react';
-import { AlertTriangleIcon, ArrowRightIcon, Loader2Icon, XIcon } from 'lucide-react';
+import { AlertTriangleIcon, ArrowRightIcon, Loader2Icon, XIcon, CheckCircleIcon } from 'lucide-react';
+import { DWebConnect, DEFAULT_WALLETS, showWalletSelector } from '@enbox/browser';
 import { useEnbox } from '@/enbox';
 import { toastError } from '@/lib/utils';
+import { CashuWalletDefinition } from '@/protocol/cashu-wallet-protocol';
+import { brand } from '@/lib/brand';
 
 interface ExportIdentityDialogProps {
   open: boolean;
@@ -20,16 +23,17 @@ type ExportPhase = 'confirm' | 'exporting' | 'done';
  * Flow:
  * 1. User confirms they want to export
  * 2. Dapp exports the PortableIdentity
- * 3. Dapp disconnects the local session
- * 4. Dapp initiates wallet connect with the portableIdentity
- * 5. Wallet imports the identity and creates delegate grants
+ * 3. Dapp disconnects the local session (soft — no storage clear)
+ * 4. auth.connect() with a one-off handler that includes portableIdentity
+ * 5. Wallet imports identity, creates delegate grants
  * 6. Dapp reconnects as delegate to the same DID
  *
  * Designed for future extraction to @enbox/react.
  */
 export const ExportIdentityDialog: React.FC<ExportIdentityDialogProps> = ({ open, onClose }) => {
-  const { auth, did, connectWallet, disconnect } = useEnbox();
+  const { auth, did, applySession } = useEnbox();
   const [phase, setPhase] = useState<ExportPhase>('confirm');
+  const [statusMessage, setStatusMessage] = useState('');
 
   if (!open) { return null; }
 
@@ -38,24 +42,40 @@ export const ExportIdentityDialog: React.FC<ExportIdentityDialogProps> = ({ open
 
     setPhase('exporting');
     try {
-      // Step 1: Export the identity (kept for future portableIdentity pass-through).
-      // TODO(enbox/connect-flow): pass portable to DWebConnect when per-call portableIdentity is supported.
-      await auth.exportIdentity(did);
+      // Step 1: Export the identity.
+      setStatusMessage('Exporting identity...');
+      const portable = await auth.exportIdentity(did);
 
-      // Step 2: Disconnect the local session.
-      await disconnect();
+      // Step 2: Disconnect the local session (soft — no storage clear, no reload).
+      setStatusMessage('Preparing wallet connect...');
+      await auth.disconnect();
 
-      // Step 3: Reconnect via wallet with the portable identity.
-      // The BrowserConnectHandler will open the wallet selector popup.
-      // The wallet will see the portableIdentity in the DWebConnect request
-      // and import it before creating delegate grants.
-      //
-      // NOTE: This requires the updated @enbox/browser that passes
-      // portableIdentity through the DWebConnect protocol. For now,
-      // we initiate a normal wallet connect — the user can manually
-      // import via recovery phrase in the wallet if needed.
-      await connectWallet();
+      // Step 3: Reconnect via wallet with the portable identity attached.
+      // We use auth.connect() with a per-call connectHandler that wraps
+      // DWebConnect.initClient() with the portableIdentity. This way the
+      // wallet receives the identity to import along with the permission
+      // requests.
+      setStatusMessage('Waiting for wallet approval...');
+      const session = await auth.connect({
+        protocols      : [CashuWalletDefinition],
+        connectHandler : {
+          async requestAccess({ permissionRequests }) {
+            // Show the wallet selector modal.
+            const walletUrl = await showWalletSelector(DEFAULT_WALLETS);
 
+            // Run DWebConnect with portableIdentity included.
+            return DWebConnect.initClient({
+              walletUrl,
+              permissionRequests,
+              appName          : brand.name,
+              appIcon          : `${window.location.origin}/favicon.ico`,
+              portableIdentity : portable,
+            });
+          },
+        },
+      });
+
+      applySession(session);
       setPhase('done');
       setTimeout(() => onClose(), 1500);
     } catch (error) {
@@ -66,7 +86,7 @@ export const ExportIdentityDialog: React.FC<ExportIdentityDialogProps> = ({ open
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+      className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
       onClick={(e) => {
         if (e.target === e.currentTarget && phase === 'confirm') { onClose(); }
       }}
@@ -76,15 +96,16 @@ export const ExportIdentityDialog: React.FC<ExportIdentityDialogProps> = ({ open
         {phase === 'exporting' && (
           <div className="flex flex-col items-center justify-center py-16 px-6">
             <Loader2Icon className="animate-spin h-8 w-8 text-primary mb-3" />
-            <p className="text-sm text-muted-foreground">Exporting identity to wallet...</p>
+            <p className="text-sm text-muted-foreground">{statusMessage}</p>
           </div>
         )}
 
         {/* Done state */}
         {phase === 'done' && (
           <div className="flex flex-col items-center justify-center py-16 px-6">
-            <div className="text-2xl mb-3">&#10003;</div>
+            <CheckCircleIcon className="h-8 w-8 text-green-400 mb-3" />
             <p className="text-sm font-medium">Identity transferred!</p>
+            <p className="text-xs text-muted-foreground mt-1">Now connected via wallet delegate.</p>
           </div>
         )}
 
