@@ -22,6 +22,9 @@ import { TrustMintDialog } from '@/components/wallet/trust-mint-dialog';
 import type { CrossMintSwapEstimate } from '@/cashu/cross-mint-swap';
 import { RecoveryPhraseDialog } from '@/components/connect/recovery-phrase-dialog';
 import { LnurlWithdrawDialog } from '@/components/wallet/lnurl-withdraw-dialog';
+import { PayRequestDialog } from '@/components/wallet/pay-request-dialog';
+import { CreateRequestDialog } from '@/components/wallet/create-request-dialog';
+import { OnboardingBanner } from '@/components/wallet/onboarding-banner';
 import { TransactionHistory } from '@/components/wallet/transaction-history';
 import { SettingsPage } from '@/components/wallet/settings-page';
 import { Toaster } from 'sonner';
@@ -64,6 +67,7 @@ function WalletHome() {
     transactions,
     totalBalance,
     mintBalances,
+    mintBalancesByContext,
     unitBalances,
     proofCountByMint,
     mintFeePpk,
@@ -72,12 +76,15 @@ function WalletHome() {
     p2pkKey,
     loading,
     reconciling,
+    dwnError,
     addMint,
+    updateMint,
     removeMint,
     deleteProofs,
     addTransaction,
     clearTransactionToken,
     getUnspentProofsForMint,
+    getUnspentProofsByContext,
     markProofsPending,
     revertProofsToUnspent,
     safeStoreReceivedProofs,
@@ -108,6 +115,8 @@ function WalletHome() {
   const [showHistory, setShowHistory] = useState(false);
   const [showSendToDid, setShowSendToDid] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showPayRequest, setShowPayRequest] = useState<string | null>(null);
+  const [showCreateRequest, setShowCreateRequest] = useState(false);
   const [trustMintState, setTrustMintState] = useState<{
     mintUrl: string;
     amount: number;
@@ -398,9 +407,7 @@ function WalletHome() {
         setShowAddMint(true);
         break;
       case 'payment-request':
-        toastError('Payment requests', new Error(
-          'NUT-18 payment request detected. Paying payment requests is coming soon.'
-        ));
+        setShowPayRequest(detected.value);
         break;
       default:
         toastError('Unrecognized QR code', new Error(
@@ -464,6 +471,7 @@ function WalletHome() {
           proofCount={proofCountByMint.get(selectedMint.url) ?? 0}
           onBack={() => setSelectedMint(null)}
           onDelete={(id) => { removeMint(id); setSelectedMint(null); }}
+          onUpdateMint={updateMint}
           getUnspentProofs={getUnspentProofsForMint}
           onNewProofs={storeNewProofs}
           onOldProofsSpent={removeProofsByIds}
@@ -522,6 +530,14 @@ function WalletHome() {
           <div className="text-center text-muted-foreground py-12 text-sm">Loading wallet...</div>
         ) : (
           <>
+            {/* DWN error banner */}
+            {dwnError && (
+              <div className="flex items-center gap-2 p-3 rounded-lg bg-destructive/10 border border-destructive/30 text-sm text-destructive">
+                <AlertTriangleIcon className="h-4 w-4 shrink-0" />
+                {dwnError}
+              </div>
+            )}
+
             {/* Pending proofs banner */}
             {pendingProofCount > 0 && (
               <div className="flex items-center gap-2 p-3 rounded-lg bg-[var(--color-warning)]/10 border border-[var(--color-warning)]/30 text-sm">
@@ -597,31 +613,37 @@ function WalletHome() {
               unitBalances={unitBalances}
             />
 
-            <ActionButtons
-              onDeposit={() => setShowDeposit(true)}
-              onWithdraw={() => setShowWithdraw(true)}
-              onSend={() => setShowSend(true)}
-              onReceive={() => setShowReceive(true)}
-              disabled={!hasMints}
-            />
+            {!hasMints ? (
+              <OnboardingBanner onAddMint={() => setShowAddMint(true)} />
+            ) : (
+              <>
+                <ActionButtons
+                  onDeposit={() => setShowDeposit(true)}
+                  onWithdraw={() => setShowWithdraw(true)}
+                  onSend={() => setShowSend(true)}
+                  onReceive={() => setShowReceive(true)}
+                  onRequest={() => setShowCreateRequest(true)}
+                />
 
-            <PasteActionBar
-              onCashuToken={(token) => handleScanResult(token)}
-              onLightningInvoice={() => setShowWithdraw(true)}
-              onMintUrl={() => setShowAddMint(true)}
-              onLnurlOrAddress={(value, type) => setShowLnurlPay({ target: value, type })}
-              onScanQr={() => setShowScanner(true)}
-              disabled={!hasMints}
-            />
+                <PasteActionBar
+                  onCashuToken={(token) => handleScanResult(token)}
+                  onLightningInvoice={() => setShowWithdraw(true)}
+                  onMintUrl={() => setShowAddMint(true)}
+                  onLnurlOrAddress={(value, type) => setShowLnurlPay({ target: value, type })}
+                  onPaymentRequest={(v) => setShowPayRequest(v)}
+                  onScanQr={() => setShowScanner(true)}
+                />
 
-            {hasMints && p2pkKey && (
-              <button
-                onClick={() => setShowSendToDid(true)}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-primary/30 text-xs font-medium text-primary hover:bg-primary/5 transition-colors"
-              >
-                <UsersIcon className="h-3.5 w-3.5" />
-                Send to DID (P2PK)
-              </button>
+                {p2pkKey && (
+                  <button
+                    onClick={() => setShowSendToDid(true)}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-primary/30 text-xs font-medium text-primary hover:bg-primary/5 transition-colors"
+                  >
+                    <UsersIcon className="h-3.5 w-3.5" />
+                    Send to DID (P2PK)
+                  </button>
+                )}
+              </>
             )}
 
             <MintListCard
@@ -757,6 +779,22 @@ function WalletHome() {
           onSwapToMint={handleSwapToMint}
           onCancel={() => setTrustMintState(null)}
         />
+      )}
+      {showPayRequest && (
+        <PayRequestDialog
+          encodedRequest={showPayRequest}
+          mints={orderedMints}
+          mintBalancesByContext={mintBalancesByContext}
+          getUnspentProofsByContext={getUnspentProofsByContext}
+          onClose={() => setShowPayRequest(null)}
+          onNewProofs={storeNewProofs}
+          onOldProofsSpent={removeProofsByIds}
+          onMarkPending={markProofsPending}
+          onTransactionCreated={recordTransaction}
+        />
+      )}
+      {showCreateRequest && hasMints && (
+        <CreateRequestDialog mints={orderedMints} onClose={() => setShowCreateRequest(false)} />
       )}
     </div>
   );

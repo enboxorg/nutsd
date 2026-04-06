@@ -12,6 +12,8 @@ interface PasteActionBarProps {
   onMintUrl: (url: string) => void;
   /** Route a detected LNURL or Lightning address to the pay flow. */
   onLnurlOrAddress?: (value: string, type: 'lightning-address' | 'lnurl') => void;
+  /** Route a detected NUT-18 payment request. */
+  onPaymentRequest?: (encoded: string) => void;
   /** Open the QR scanner. */
   onScanQr: () => void;
   disabled?: boolean;
@@ -29,6 +31,7 @@ export const PasteActionBar: React.FC<PasteActionBarProps> = ({
   onLightningInvoice,
   onMintUrl,
   onLnurlOrAddress,
+  onPaymentRequest,
   onScanQr,
   disabled,
 }) => {
@@ -85,9 +88,8 @@ export const PasteActionBar: React.FC<PasteActionBarProps> = ({
         onMintUrl(detected.value);
         break;
       case 'payment-request':
-        toastError('Payment requests', new Error(
-          'NUT-18 payment request support is coming in a future update.'
-        ));
+        if (onPaymentRequest) onPaymentRequest(detected.value);
+        else toastError('Payment requests', new Error('Not supported yet'));
         break;
       case 'unknown':
         toastError('Unrecognized input', new Error(

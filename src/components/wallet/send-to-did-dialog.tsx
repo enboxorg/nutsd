@@ -240,9 +240,23 @@ export const SendToDIDDialog: React.FC<SendToDIDDialogProps> = ({
             )}
 
             <div className="space-y-2">
-              <div className="flex justify-between">
+              <div className="flex justify-between items-center">
                 <label className="text-xs text-muted-foreground">Amount (sats)</label>
-                <span className="text-xs text-muted-foreground">Balance: {formatAmount(balance)}</span>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs text-muted-foreground">Balance: {formatAmount(balance)}</span>
+                  <button
+                    onClick={() => {
+                      // Conservative max: leave room for input fees (NUT-02).
+                      // The exact fee depends on proof count and keyset fee rate,
+                      // which we don't have here. Deduct ~1% as a safe margin.
+                      const maxAfterFees = Math.max(1, Math.floor(balance * 0.99));
+                      setAmount(String(maxAfterFees));
+                    }}
+                    className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground hover:text-foreground"
+                  >
+                    Max
+                  </button>
+                </div>
               </div>
               <input
                 type="number"

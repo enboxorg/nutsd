@@ -3,6 +3,7 @@ import {
   ArrowDownIcon,
   SendIcon,
   DownloadIcon,
+  FileTextIcon,
 } from 'lucide-react';
 
 interface ActionButtonsProps {
@@ -10,6 +11,7 @@ interface ActionButtonsProps {
   onWithdraw: () => void;
   onSend: () => void;
   onReceive: () => void;
+  onRequest?: () => void;
   disabled?: boolean;
 }
 
@@ -18,6 +20,7 @@ export const ActionButtons: React.FC<ActionButtonsProps> = ({
   onWithdraw,
   onSend,
   onReceive,
+  onRequest,
   disabled,
 }) => {
   const actions = [
@@ -25,10 +28,11 @@ export const ActionButtons: React.FC<ActionButtonsProps> = ({
     { label: 'Withdraw', icon: ArrowUpIcon, onClick: onWithdraw, color: 'text-[var(--color-warning)]' },
     { label: 'Send', icon: SendIcon, onClick: onSend, color: 'text-primary' },
     { label: 'Receive', icon: DownloadIcon, onClick: onReceive, color: 'text-[var(--color-info)]' },
+    ...(onRequest ? [{ label: 'Request', icon: FileTextIcon, onClick: onRequest, color: 'text-[var(--color-info)]' }] : []),
   ];
 
   return (
-    <div className="grid grid-cols-4 gap-3">
+    <div className={`grid gap-3 ${actions.length > 4 ? 'grid-cols-5' : 'grid-cols-4'}`}>
       {actions.map(({ label, icon: Icon, onClick, color }) => (
         <button
           key={label}
