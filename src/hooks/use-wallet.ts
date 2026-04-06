@@ -135,6 +135,7 @@ export function useWallet() {
   const [incomingTransfers, setIncomingTransfers] = useState<TransferData[]>([]);
   const [loading, setLoading] = useState(false);
   const [reconciling, setReconciling] = useState(false);
+  const [dwnError, setDwnError] = useState<string | null>(null);
 
   // --- DWN record cache (for in-place updates) ---
   const proofRecordCache = useRef<Map<string, any>>(new Map());
@@ -171,6 +172,7 @@ export function useWallet() {
       setPreferences({});
       setP2pkKey(null);
       setIncomingTransfers([]);
+      setDwnError(null);
       proofRecordCache.current.clear();
       incomingTransferRecordsRef.current = [];
       // Reset startup recovery flag so reconnection triggers fresh recovery
@@ -184,6 +186,7 @@ export function useWallet() {
 
   const refreshMints = useCallback(async () => {
     if (!repo) return;
+    setDwnError(null);
     try {
       const { records } = await repo.mint.query();
       setMints(
@@ -202,6 +205,7 @@ export function useWallet() {
       );
     } catch (err) {
       console.error('Failed to load mints:', err);
+      setDwnError('Failed to load wallet data. Check your connection.');
     }
   }, [repo]);
 
@@ -215,6 +219,7 @@ export function useWallet() {
       proofRecordCache.current.clear();
       return [];
     }
+    setDwnError(null);
     try {
       const allProofs: StoredProof[] = [];
       const newCache = new Map<string, any>();
@@ -247,6 +252,7 @@ export function useWallet() {
       return allProofs;
     } catch (err) {
       console.error('Failed to load proofs:', err);
+      setDwnError('Failed to load wallet data. Check your connection.');
       return [];
     }
   }, [repo, mints]);
@@ -256,6 +262,7 @@ export function useWallet() {
       setKeysets([]);
       return;
     }
+    setDwnError(null);
     try {
       const allKeysets: Keyset[] = [];
       for (const mint of mints) {
@@ -276,11 +283,13 @@ export function useWallet() {
       setKeysets(allKeysets);
     } catch (err) {
       console.error('Failed to load keysets:', err);
+      setDwnError('Failed to load wallet data. Check your connection.');
     }
   }, [repo, mints]);
 
   const refreshTransactions = useCallback(async () => {
     if (!repo) return;
+    setDwnError(null);
     try {
       // Query all transactions — no tags, filter/sort client-side
       const { records } = await repo.transaction.query();
@@ -305,6 +314,7 @@ export function useWallet() {
       setTransactions(txList);
     } catch (err) {
       console.error('Failed to load transactions:', err);
+      setDwnError('Failed to load wallet data. Check your connection.');
     }
   }, [repo]);
 
@@ -699,6 +709,21 @@ export function useWallet() {
 
     return mint;
   }, [repo]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Update a mint's metadata (e.g., custom name). */
+  const updateMint = useCallback(async (id: string, updates: Partial<MintData>) => {
+    if (!repo) return;
+    try {
+      const { records } = await repo.mint.query();
+      const record = records.find((r: { id: string }) => r.id === id);
+      if (!record) return;
+      const data: MintData = await record.data.json();
+      await record.update({ data: { ...data, ...updates } });
+      setMints(prev => prev.map(m => m.id === id ? { ...m, ...updates } : m));
+    } catch (err) {
+      console.error('Failed to update mint:', err);
+    }
+  }, [repo]);
 
   /** Remove a mint and cascade-delete its child proofs and keysets. */
   const removeMint = useCallback(async (id: string) => {
@@ -1346,6 +1371,7 @@ export function useWallet() {
     p2pkKey,
     loading,
     reconciling,
+    dwnError,
     totalBalance,
     mintBalances,
     unitBalances,
@@ -1356,6 +1382,7 @@ export function useWallet() {
 
     // Mint operations
     addMint,
+    updateMint,
     removeMint,
     refreshMints,
 

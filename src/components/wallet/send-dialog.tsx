@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react';
 import { Loader2Icon, XIcon, SendIcon, CopyIcon, CheckIcon } from 'lucide-react';
+import { QRCodeDisplay } from '@/components/qr-code';
 import { toastError, toastSuccess, truncateMintUrl, formatAmount } from '@/lib/utils';
 import { swapProofs, estimateInputFee } from '@/cashu/wallet-ops';
 import { encodeToken } from '@/cashu/token-utils';
@@ -175,11 +176,17 @@ export const SendDialog: React.FC<SendDialogProps> = ({
             )}
 
             <div className="space-y-2">
-              <div className="flex justify-between">
+              <div className="flex justify-between items-center">
                 <label className="text-xs text-muted-foreground">Amount (sats)</label>
-                <span className="text-xs text-muted-foreground">
-                  Balance: {formatAmount(balance, selectedMint?.unit)}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">Balance: {formatAmount(balance, selectedMint?.unit)}</span>
+                  <button
+                    onClick={() => setAmount(String(Math.max(0, balance - estimatedFee)))}
+                    className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground hover:text-foreground"
+                  >
+                    Max
+                  </button>
+                </div>
               </div>
               <input
                 type="number"
@@ -224,6 +231,10 @@ export const SendDialog: React.FC<SendDialogProps> = ({
 
         {step === 'token' && (
           <div className="space-y-4">
+            <div className="flex justify-center">
+              <QRCodeDisplay value={token} size={180} />
+            </div>
+            <p className="text-sm font-semibold text-center">{formatAmount(parseInt(amount), selectedMint?.unit)}</p>
             <p className="text-xs text-muted-foreground">
               Share this Cashu token with the recipient:
             </p>

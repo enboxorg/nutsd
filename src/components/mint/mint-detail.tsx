@@ -9,6 +9,7 @@ import {
   ZapIcon,
   InfoIcon,
   BarChart3Icon,
+  PencilIcon,
 } from 'lucide-react';
 import { formatAmount, truncateMintUrl, toastSuccess, toastError } from '@/lib/utils';
 import { getMintInfo, type MintInfo } from '@/cashu/wallet-ops';
@@ -24,6 +25,8 @@ interface MintDetailProps {
   proofCount?: number;
   onBack: () => void;
   onDelete: (mintId: string) => void;
+  /** Update mint metadata (e.g., custom name). */
+  onUpdateMint?: (id: string, updates: { name?: string }) => Promise<void>;
   /** Props for swap/consolidation dialog */
   getUnspentProofs?: (mintUrl: string) => StoredProof[];
   onNewProofs?: (mintContextId: string, proofs: Proof[]) => Promise<void>;
@@ -57,6 +60,7 @@ export const MintDetail: React.FC<MintDetailProps> = ({
   proofCount,
   onBack,
   onDelete,
+  onUpdateMint,
   getUnspentProofs,
   onNewProofs,
   onOldProofsSpent,
@@ -68,13 +72,16 @@ export const MintDetail: React.FC<MintDetailProps> = ({
   const [copied, setCopied] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showSwapDialog, setShowSwapDialog] = useState(false);
+  const [mintOnline, setMintOnline] = useState<boolean | null>(null);
+  const [editingName, setEditingName] = useState(false);
+  const [editName, setEditName] = useState(mint.name ?? '');
 
   useEffect(() => {
     let cancelled = false;
     setLoadingInfo(true);
     getMintInfo(mint.url, mint.unit)
-      .then((i) => { if (!cancelled) setInfo(i); })
-      .catch(() => { /* use cached info from mint record */ })
+      .then((i) => { if (!cancelled) { setInfo(i); setMintOnline(true); } })
+      .catch(() => { if (!cancelled) setMintOnline(false); /* use cached info from mint record */ })
       .finally(() => { if (!cancelled) setLoadingInfo(false); });
     return () => { cancelled = true; };
   }, [mint.url, mint.unit]);
@@ -127,8 +134,14 @@ export const MintDetail: React.FC<MintDetailProps> = ({
           >
             <ArrowLeftIcon className="h-4 w-4" />
           </button>
-          <div className="text-sm font-semibold truncate flex-1">
+          <div className="text-sm font-semibold truncate flex-1 flex items-center gap-2">
             {mint.name || truncateMintUrl(mint.url)}
+            {mintOnline !== null && (
+              <span
+                className={`inline-block h-2 w-2 rounded-full shrink-0 ${mintOnline ? 'bg-[var(--color-success)]' : 'bg-destructive'}`}
+                title={mintOnline ? 'Mint is online' : 'Mint is offline'}
+              />
+            )}
           </div>
         </div>
       </header>
@@ -144,6 +157,52 @@ export const MintDetail: React.FC<MintDetailProps> = ({
             {formatAmount(balance, mint.unit)}
           </div>
         </div>
+
+        {/* Name editing */}
+        {onUpdateMint && (
+          <div className="rounded-xl bg-card border border-border p-4 space-y-2">
+            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+              Custom Name
+            </div>
+            {editingName ? (
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  placeholder="Enter a name..."
+                  className="flex-1 px-3 py-1.5 rounded-lg bg-background border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  autoFocus
+                />
+                <button
+                  onClick={async () => {
+                    await onUpdateMint(mint.id, { name: editName.trim() || undefined });
+                    setEditingName(false);
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium"
+                >
+                  Save
+                </button>
+                <button
+                  onClick={() => { setEditName(mint.name ?? ''); setEditingName(false); }}
+                  className="px-3 py-1.5 rounded-lg border border-border text-xs hover:bg-muted"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between">
+                <span className="text-sm">{mint.name || <span className="text-muted-foreground italic">No custom name</span>}</span>
+                <button
+                  onClick={() => setEditingName(true)}
+                  className="p-1.5 rounded-md hover:bg-muted transition-colors text-muted-foreground"
+                >
+                  <PencilIcon className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Mint URL */}
         <div className="rounded-xl bg-card border border-border p-4 space-y-2">
@@ -284,9 +343,16 @@ export const MintDetail: React.FC<MintDetailProps> = ({
             {confirmDelete ? 'Confirm Remove Mint' : 'Remove Mint'}
           </button>
           {confirmDelete && (
-            <p className="text-xs text-destructive/70 text-center mt-2">
-              This will remove the mint and all its stored proofs. Click again to confirm.
-            </p>
+            <div className="mt-2 space-y-1">
+              {balance > 0 && (
+                <p className="text-xs text-destructive font-medium text-center">
+                  Warning: This mint has a balance of {formatAmount(balance, mint.unit)}. Removing it will delete all stored proofs.
+                </p>
+              )}
+              <p className="text-xs text-destructive/70 text-center">
+                This will remove the mint and all its stored proofs. Click again to confirm.
+              </p>
+            </div>
           )}
         </div>
       </main>

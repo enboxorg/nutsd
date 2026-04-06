@@ -240,9 +240,17 @@ export const SendToDIDDialog: React.FC<SendToDIDDialogProps> = ({
             )}
 
             <div className="space-y-2">
-              <div className="flex justify-between">
+              <div className="flex justify-between items-center">
                 <label className="text-xs text-muted-foreground">Amount (sats)</label>
-                <span className="text-xs text-muted-foreground">Balance: {formatAmount(balance)}</span>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs text-muted-foreground">Balance: {formatAmount(balance)}</span>
+                  <button
+                    onClick={() => setAmount(String(balance))}
+                    className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground hover:text-foreground"
+                  >
+                    Max
+                  </button>
+                </div>
               </div>
               <input
                 type="number"
