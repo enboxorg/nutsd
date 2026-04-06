@@ -23,7 +23,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { repository } from '@enbox/api';
+import { repository } from '@enbox/browser';
 import { useEnbox } from '@/enbox';
 import {
   CashuWalletProtocol,
