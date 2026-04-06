@@ -67,7 +67,7 @@ export const TrustMintDialog: React.FC<TrustMintDialogProps> = ({
 
         <div className="space-y-2">
           <p className="text-sm text-muted-foreground">
-            This token ({formatAmount(amount, unit)}) is from a mint you haven't added:
+            This token {amount > 0 ? `(${formatAmount(amount, unit)})` : '(unknown amount)'} is from a mint you haven't added:
           </p>
           <div className="p-2 rounded-lg bg-background border border-border">
             <code className="text-xs font-mono break-all text-foreground">{mintUrl}</code>

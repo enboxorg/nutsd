@@ -131,18 +131,23 @@ const TokenTab: React.FC<{
       // trust dialog instead of silently auto-adding the mint.
       let knownMint = mints.find(m => m.url === mintUrl);
       if (!knownMint) {
-        // Don't auto-add — let the user decide via TrustMintDialog
         if (onUnknownMint) {
-          // Decode token to get the amount for the trust dialog
+          let tokenAmount = 0;
+          let tokenUnit = 'sat';
           try {
+            // Try parsing — works reliably for V3 (cashuA), may fail for V4 (cashuB)
+            // without keyset data. That's OK — we show "unknown amount" in the dialog.
             const parsed = parseToken(trimmed);
-            onUnknownMint(mintUrl, parsed.amount, parsed.unit ?? 'sat', trimmed);
+            tokenAmount = parsed.amount;
+            tokenUnit = parsed.unit ?? 'sat';
           } catch {
-            onUnknownMint(mintUrl, 0, 'sat', trimmed);
+            // V4 or unparseable — amount will be shown as "unknown" in trust dialog
           }
-          return; // Wait for user decision
+          onUnknownMint(mintUrl, tokenAmount, tokenUnit, trimmed);
+          releaseLock();
+          setLoading(false);
+          return;
         }
-        // Fallback if no handler (shouldn't happen)
         throw new Error(`Token is from unknown mint ${mintUrl}. Add it first in Settings.`);
       }
 

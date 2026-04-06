@@ -213,8 +213,13 @@ function WalletHome() {
   /** Trust the unknown mint, add it, and claim the token. */
   const handleTrustAndClaim = useCallback(async () => {
     if (!trustMintState) return;
-    const releaseLock = await acquireWalletLock('trust-claim').catch(() => null);
-    if (!releaseLock) { toastError('Wallet busy', new Error('Another wallet operation is in progress.')); return; }
+    let releaseLock: (() => void) | undefined;
+    try {
+      releaseLock = await acquireWalletLock('trust-claim');
+    } catch {
+      toastError('Wallet busy', new Error('Another wallet operation is in progress.'));
+      return;
+    }
     try {
       // Add the mint
       const newMint = await addMint({ url: trustMintState.mintUrl, unit: trustMintState.unit, active: true });
@@ -235,7 +240,7 @@ function WalletHome() {
     } catch (err) {
       toastError('Failed to receive', err);
     } finally {
-      releaseLock();
+      releaseLock?.();
       setTrustMintState(null);
     }
   }, [trustMintState, addMint, storeNewProofs, recordTransaction]);
@@ -243,36 +248,80 @@ function WalletHome() {
   /** Swap the token from the unknown mint to a trusted mint via Lightning. */
   const handleSwapToMint = useCallback(async (estimate: CrossMintSwapEstimate, targetMint: Mint) => {
     if (!trustMintState) return;
-    const releaseLock = await acquireWalletLock('cross-mint-swap').catch(() => null);
-    if (!releaseLock) { toastError('Wallet busy', new Error('Another wallet operation is in progress.')); return; }
+    let releaseLock: (() => void) | undefined;
     try {
-      // First receive the token at the foreign mint (need proofs to melt)
-      const tempMint = await addMint({ url: trustMintState.mintUrl, unit: trustMintState.unit, active: true });
-      if (!tempMint) throw new Error('Failed to connect to source mint');
-
-      const foreignProofs = await receiveToken(trustMintState.mintUrl, trustMintState.token, trustMintState.unit);
+      releaseLock = await acquireWalletLock('cross-mint-swap');
+    } catch {
+      toastError('Wallet busy', new Error('Another wallet operation is in progress.'));
+      return;
+    }
+    try {
+      // Receive the token at the foreign mint using a TRANSIENT wallet.
+      // We do NOT add the foreign mint to the DWN — that's the whole point of
+      // the trust dialog. The cashu-ts Wallet is created directly via getWallet()
+      // which only needs the mint URL, not a DWN record.
+      const { receiveToken: receiveTokenOp } = await import('@/cashu/wallet-ops');
+      const foreignProofs = await receiveTokenOp(trustMintState.mintUrl, trustMintState.token, trustMintState.unit);
 
       // Execute cross-mint swap
       const { executeCrossMintSwap } = await import('@/cashu/cross-mint-swap');
-      const result = await executeCrossMintSwap(
-        trustMintState.mintUrl, targetMint.url, foreignProofs, estimate, trustMintState.unit,
-      );
+      let result;
+      try {
+        result = await executeCrossMintSwap(
+          trustMintState.mintUrl, targetMint.url, foreignProofs, estimate, trustMintState.unit,
+        );
+      } catch (err: any) {
+        // If the melt succeeded but minting timed out, persist recovery state
+        if (err.pendingSwapState) {
+          // Persist change proofs from foreign mint if any
+          if (err.change?.length > 0) {
+            // We need a temporary mint record to store change proofs.
+            // This is the ONE case where we add the foreign mint — because we
+            // have change proofs that belong to it. Mark it as inactive.
+            const tempMint = await addMint({ url: trustMintState.mintUrl, unit: trustMintState.unit, active: false });
+            if (tempMint) await storeNewProofs(tempMint.contextId, err.change);
+          }
+          // Record the pending swap as a transaction for later resume
+          await recordTransaction({
+            type    : 'swap',
+            amount  : estimate.receiveAmount,
+            unit    : trustMintState.unit,
+            mintUrl : targetMint.url,
+            status  : 'pending',
+            memo    : JSON.stringify(err.pendingSwapState),
+          });
+          toastError('Swap partially complete', new Error(
+            'Lightning payment sent. Waiting for trusted mint to detect payment. ' +
+            'The swap will resume automatically on next startup.'
+          ));
+          setTrustMintState(null);
+          return;
+        }
+        throw err;
+      }
 
-      // Store new proofs at trusted mint
+      // Store new proofs at trusted mint (stash-safe)
       await storeNewProofs(targetMint.contextId, result.proofs);
+
+      // Store foreign change proofs if any
+      if (result.change.length > 0) {
+        const tempMint = await addMint({ url: trustMintState.mintUrl, unit: trustMintState.unit, active: false });
+        if (tempMint) await storeNewProofs(tempMint.contextId, result.change);
+      }
+
       await recordTransaction({
         type    : 'receive',
         amount  : result.amount,
         unit    : trustMintState.unit,
         mintUrl : targetMint.url,
         status  : 'completed',
-        memo    : `Cross-mint swap from ${trustMintState.mintUrl}`,
+        memo    : `Cross-mint swap from ${truncateMintUrl(trustMintState.mintUrl)}`,
       });
-      toastSuccess('Token swapped', `+${result.amount} ${trustMintState.unit} at ${truncateMintUrl(targetMint.url)}`);
+      toastSuccess('Token swapped', `+${formatAmount(result.amount, trustMintState.unit)} at ${truncateMintUrl(targetMint.url)}`);
     } catch (err) {
       toastError('Swap failed', err);
     } finally {
-      releaseLock();
+      releaseLock?.();
       setTrustMintState(null);
     }
   }, [trustMintState, addMint, storeNewProofs, recordTransaction]);
@@ -347,6 +396,11 @@ function WalletHome() {
         break;
       case 'mint-url':
         setShowAddMint(true);
+        break;
+      case 'payment-request':
+        toastError('Payment requests', new Error(
+          'NUT-18 payment request detected. Paying payment requests is coming soon.'
+        ));
         break;
       default:
         toastError('Unrecognized QR code', new Error(
@@ -534,7 +588,7 @@ function WalletHome() {
 
             <BalanceCard
               totalBalance={totalBalance}
-              unit="sat"
+              unit={preferences.displayCurrency || 'sat'}
               mintCount={mints.length}
               unitBalances={unitBalances}
             />
