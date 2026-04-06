@@ -44,8 +44,7 @@ import {
   type KeysetInfo,
 } from '@/cashu/wallet-ops';
 import { generateP2pkKeyPair, receiveP2pkLocked, type P2pkKeyPair } from '@/cashu/p2pk';
-// proof-stash-recovery.ts exports the testable pure function — used in tests.
-// The hook's recoverProofStashes() wraps the same logic with DWN record access.
+import { recoverStashes, type RecoveryDeps } from '@/cashu/proof-stash-recovery';
 import { acquireWalletLock } from '@/lib/wallet-mutex';
 
 // ---------------------------------------------------------------------------
@@ -172,6 +171,9 @@ export function useWallet() {
       setP2pkKey(null);
       setIncomingTransfers([]);
       proofRecordCache.current.clear();
+      incomingTransferRecordsRef.current = [];
+      // Reset startup recovery flag so reconnection triggers fresh recovery
+      startupRecoveryDone.current = false;
     }
   }, [enbox, isConnected]);
 
@@ -202,11 +204,15 @@ export function useWallet() {
     }
   }, [repo]);
 
-  const refreshProofs = useCallback(async () => {
+  /**
+   * Load all proofs from the DWN and update React state.
+   * Returns the loaded proofs directly (not via React state, which is async).
+   */
+  const refreshProofs = useCallback(async (): Promise<StoredProof[]> => {
     if (!repo || mints.length === 0) {
       setProofs([]);
       proofRecordCache.current.clear();
-      return;
+      return [];
     }
     try {
       const allProofs: StoredProof[] = [];
@@ -237,8 +243,10 @@ export function useWallet() {
       }
       proofRecordCache.current = newCache;
       setProofs(allProofs);
+      return allProofs;
     } catch (err) {
       console.error('Failed to load proofs:', err);
+      return [];
     }
   }, [repo, mints]);
 
@@ -379,27 +387,27 @@ export function useWallet() {
 
   // Proofs/keysets load after mints; startup recovery runs once proofs are loaded.
   const startupRecoveryDone = useRef(false);
-  const startupRecoveryRef = useRef<() => Promise<void>>(async () => {});
+  const startupRecoveryRef = useRef<(freshProofs: StoredProof[]) => Promise<void>>(async () => {});
 
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       // Load proofs and keysets (depend on mints being present)
+      let freshProofs: StoredProof[] = [];
       if (mints.length > 0) {
-        await refreshProofs();
+        freshProofs = await refreshProofs();
         await refreshKeysets();
       }
       // Incoming transfers checked regardless of mint count
       await checkIncomingTransfers();
 
       // Startup recovery: runs ONCE, AFTER proofs are loaded.
-      // recoverProofStashes needs existing proofs for deduplication.
-      // reconcilePendingProofs needs loaded proofs to find pending ones.
+      // Pass freshProofs directly — React state may not have committed yet.
       if (!cancelled && !startupRecoveryDone.current) {
         startupRecoveryDone.current = true;
         try {
-          await startupRecoveryRef.current();
+          await startupRecoveryRef.current(freshProofs);
         } catch (err) {
           console.error('[nutsd] Startup recovery failed:', err);
         }
@@ -594,8 +602,14 @@ export function useWallet() {
    * This is the crash recovery mechanism. Without it, proofs marked pending
    * before a crash would be stuck in limbo forever.
    */
-  const reconcilePendingProofs = useCallback(async () => {
-    const pendingProofs = proofs.filter(p => p.state === 'pending');
+  /**
+   * @param loadedProofs - Pass freshly loaded proofs directly to avoid
+   *   depending on React state (which may not have committed yet after
+   *   setProofs). Falls back to the `proofs` state if not provided.
+   */
+  const reconcilePendingProofs = useCallback(async (loadedProofs?: StoredProof[]) => {
+    const allProofs = loadedProofs ?? proofs;
+    const pendingProofs = allProofs.filter(p => p.state === 'pending');
     if (pendingProofs.length === 0) return;
 
     setReconciling(true);
@@ -970,102 +984,74 @@ export function useWallet() {
    * 4. Write any missing proofs
    * 5. Delete the stash
    *
-   * This handles all partial-write failure modes:
-   * - Crash before any per-proof writes: all proofs recovered from stash
-   * - Crash after some writes: only missing proofs are filled in
-   * - Crash after all writes but before stash delete: dedup detects all present, stash cleaned up
+   * Delegates to the extracted `recoverStashes()` pure function (same code
+   * that is tested in proof-stash-recovery.test.ts), wiring DWN access as
+   * injected deps. This ensures the tested code IS the production code.
    */
   const recoverProofStashes = useCallback(async () => {
     if (!repo) return;
-    try {
-      const { records } = await repo.proofStash.query();
-      if (!records || records.length === 0) return;
 
-      console.log(`[nutsd] Found ${records.length} proof stash(es) to recover`);
-
-      for (const record of records) {
-        try {
-          const stash: ProofStashData = await record.data.json();
-
-          // Ensure mint exists (may need auto-add if stash is from an unknown mint)
-          let mint = mints.find(m => m.contextId === stash.mintContextId)
-                  ?? mints.find(m => m.url === stash.mintUrl);
-          if (!mint) {
-            try {
-              const newMint = await addMint({ url: stash.mintUrl, unit: stash.unit, active: true });
-              if (newMint) mint = newMint;
-            } catch {
-              console.warn(`[nutsd] Stash recovery: mint ${stash.mintUrl} unreachable, retrying next startup`);
-              continue; // Leave stash for next attempt
-            }
-          }
-          if (!mint) {
-            console.warn(`[nutsd] Stash recovery: cannot resolve mint for ${stash.mintUrl}`);
-            continue;
-          }
-
-          // Load existing proofs for this mint to deduplicate
-          const existingSecrets = new Set<string>();
+    const deps: RecoveryDeps = {
+      getStashes: async () => {
+        const { records } = await repo.proofStash.query();
+        if (!records) return [];
+        const stashes = [];
+        for (const record of records) {
           try {
-            const { records: proofRecords } = await repo.mint.proof.query(mint.contextId);
-            for (const pr of proofRecords) {
-              try {
-                const pd: ProofData = await pr.data.json();
-                existingSecrets.add(pd.secret);
-              } catch { /* skip unreadable */ }
-            }
-          } catch { /* no existing proofs */ }
-
-          // Write missing proofs, tracking failures
-          let recovered = 0;
-          let failed = 0;
-          for (const proof of stash.proofs) {
-            if (existingSecrets.has(proof.secret)) continue;
-            try {
-              await addProof(mint.contextId, proof);
-              recovered++;
-            } catch (err) {
-              failed++;
-              console.error(`[nutsd] Failed to recover proof from stash:`, err);
-              // Continue with remaining proofs — partial recovery is better than none
-            }
-          }
-
-          // CRITICAL: Only delete the stash if ALL proofs are accounted for.
-          // If any addProof calls failed, the stash MUST be preserved so the
-          // next startup attempt can retry those proofs. Deleting the stash
-          // after a partial failure would permanently lose the failed proofs.
-          if (failed > 0) {
-            console.warn(
-              `[nutsd] Stash recovery incomplete: ${recovered} recovered, ${failed} failed. ` +
-              'Stash preserved for next startup.',
-            );
-          } else {
-            try {
-              await record.delete();
-            } catch {
-              console.warn('[nutsd] Failed to delete recovered stash');
-            }
-            if (recovered > 0) {
-              console.log(`[nutsd] Recovered ${recovered} proof(s) from stash for ${stash.mintUrl}`);
-            }
-          }
-        } catch (err) {
-          console.error('[nutsd] Failed to process stash record:', err);
-          // Leave stash for next startup
+            const data: ProofStashData = await record.data.json();
+            stashes.push({ data, delete: () => record.delete() });
+          } catch { /* skip unreadable */ }
         }
-      }
-    } catch (err) {
-      console.error('[nutsd] Proof stash recovery failed:', err);
+        return stashes;
+      },
+      getExistingSecrets: async (mintContextId: string) => {
+        const secrets = new Set<string>();
+        try {
+          const { records: proofRecords } = await repo.mint.proof.query(mintContextId);
+          for (const pr of proofRecords) {
+            try {
+              const pd: ProofData = await pr.data.json();
+              secrets.add(pd.secret);
+            } catch { /* skip */ }
+          }
+        } catch { /* no existing proofs */ }
+        return secrets;
+      },
+      writeProof: async (mintContextId: string, proof: ProofData) => {
+        await addProof(mintContextId, proof);
+      },
+      ensureMint: async (mintUrl: string, unit: string) => {
+        let mint = mints.find(m => m.url === mintUrl);
+        if (!mint) {
+          try {
+            const newMint = await addMint({ url: mintUrl, unit, active: true });
+            if (newMint) return newMint.contextId;
+          } catch { /* unreachable */ }
+          return null;
+        }
+        return mint.contextId;
+      },
+    };
+
+    const result = await recoverStashes(deps);
+    if (result.proofsRecovered > 0 || result.proofsFailed > 0) {
+      console.log(
+        `[nutsd] Stash recovery: ${result.proofsRecovered} recovered, ` +
+        `${result.proofsFailed} failed, ${result.proofsSkipped} skipped, ` +
+        `${result.stashesCompleted}/${result.stashesFound} stashes completed`,
+      );
     }
   }, [repo, mints, addMint, addProof]);
 
   // Wire startup recovery ref — called by the mints-dependent effect above
-  // AFTER proofs are loaded, ensuring dedup and reconciliation have data.
+  // AFTER proofs are loaded. The loaded proofs are passed directly to avoid
+  // depending on React state (setProofs is async and may not have committed).
   useEffect(() => {
-    startupRecoveryRef.current = async () => {
+    startupRecoveryRef.current = async (freshProofs: StoredProof[]) => {
       await recoverProofStashes();
-      await reconcilePendingProofs();
+      // Pass freshly loaded proofs directly — do NOT read from React state,
+      // which may not have committed the setProofs() from refreshProofs() yet.
+      await reconcilePendingProofs(freshProofs);
     };
   }, [recoverProofStashes, reconcilePendingProofs]);
 
