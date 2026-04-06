@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react';
 import { Loader2Icon, XIcon, ZapIcon, UserIcon } from 'lucide-react';
 import { toastError, toastSuccess, truncateMintUrl, formatAmount } from '@/lib/utils';
+import { acquireWalletLock } from '@/lib/wallet-mutex';
 import {
   resolveLightningAddress,
   resolveLnurl,
@@ -119,6 +120,16 @@ export const LnurlWithdrawDialog: React.FC<LnurlWithdrawDialogProps> = ({
     busyRef.current = true;
     setLoading(true);
     setStep('paying');
+    let releaseLock: (() => void) | undefined;
+    try {
+      releaseLock = await acquireWalletLock('lnurl-melt');
+    } catch {
+      toastError('Wallet busy', new Error('Another wallet operation is in progress. Please wait.'));
+      setStep('confirm');
+      setLoading(false);
+      busyRef.current = false;
+      return;
+    }
     try {
       const storedProofs = getUnspentProofs(selectedMint.url);
       const spentIds = storedProofs.map(p => p.id);
@@ -157,6 +168,7 @@ export const LnurlWithdrawDialog: React.FC<LnurlWithdrawDialogProps> = ({
       setErrorMsg(err instanceof Error ? err.message : String(err));
       setStep('error');
     } finally {
+      releaseLock?.();
       setLoading(false);
       busyRef.current = false;
     }

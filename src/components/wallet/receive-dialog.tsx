@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { Loader2Icon, XIcon, DownloadIcon, ZapIcon, CopyIcon, CheckIcon, ChevronDownIcon } from 'lucide-react';
 import { toastError, toastSuccess, truncateMintUrl } from '@/lib/utils';
-import { receiveToken, createMintQuote, checkMintQuote, mintTokens } from '@/cashu/wallet-ops';
+import { receiveToken, createMintQuote, checkMintQuote, mintTokens, getMintInfo } from '@/cashu/wallet-ops';
+import { acquireWalletLock } from '@/lib/wallet-mutex';
 import { subscribeToQuote } from '@/lib/mint-ws';
 import { extractMintUrl, isCashuToken, isP2pkLockedToken } from '@/cashu/token-utils';
 import { receiveP2pkLocked } from '@/cashu/p2pk';
@@ -109,11 +110,38 @@ const TokenTab: React.FC<{
     }
 
     setLoading(true);
+    const releaseLock = await acquireWalletLock('receive').catch(() => {
+      toastError('Wallet busy', new Error('Another wallet operation is in progress.'));
+      setLoading(false);
+      return null;
+    });
+    if (!releaseLock) return;
+
     try {
       const mintUrl = extractMintUrl(trimmed);
       if (!mintUrl) throw new Error('Could not determine mint URL from token');
 
-      const knownMint = mints.find(m => m.url === mintUrl);
+      // ENSURE MINT EXISTS BEFORE REDEEM: verify the mint is reachable
+      // and known locally. If unknown, auto-add it now. If it fails, we
+      // abort BEFORE calling the mint — no proofs can be lost.
+      let knownMint = mints.find(m => m.url === mintUrl);
+      if (!knownMint) {
+        try {
+          // Verify connectivity by fetching mint info
+          await getMintInfo(mintUrl);
+          // Auto-add (onProofsReceived -> storeNewProofsForMintUrl handles
+          // this too, but doing it here guarantees the mint record exists
+          // before we redeem, so if DWN write fails we haven't lost proofs)
+          await onProofsReceived('', [], mintUrl); // trigger auto-add via empty ctx
+          knownMint = mints.find(m => m.url === mintUrl) ?? { unit: 'sat' } as any;
+        } catch {
+          throw new Error(
+            `Mint ${mintUrl} is unreachable. Cannot safely receive tokens — ` +
+            'add the mint manually first.',
+          );
+        }
+      }
+
       let newProofs: Proof[];
 
       // Detect P2PK-locked tokens and unlock with stored key
@@ -144,6 +172,7 @@ const TokenTab: React.FC<{
     } catch (err) {
       toastError('Failed to receive token', err);
     } finally {
+      releaseLock();
       setLoading(false);
     }
   };

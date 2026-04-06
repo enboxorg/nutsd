@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Loader2Icon, XIcon, BarChart3Icon, ArrowRightIcon } from 'lucide-react';
 import { toastError, toastSuccess, formatAmount } from '@/lib/utils';
+import { acquireWalletLock } from '@/lib/wallet-mutex';
 import { analyzeProofs, type ProofAnalysis } from '@/cashu/proof-utils';
 import { swapProofs } from '@/cashu/wallet-ops';
 import type { Mint, StoredProof } from '@/hooks/use-wallet';
@@ -41,6 +42,14 @@ export const SwapConsolidateDialog: React.FC<SwapConsolidateDialogProps> = ({
   const handleConsolidate = async () => {
     if (loading || !analysis.canConsolidate) return;
     setLoading(true);
+    let releaseLock: (() => void) | undefined;
+    try {
+      releaseLock = await acquireWalletLock('consolidate');
+    } catch {
+      toastError('Wallet busy', new Error('Another wallet operation is in progress. Please wait.'));
+      setLoading(false);
+      return;
+    }
     try {
       const spentIds = storedProofs.map(p => p.id);
 
@@ -80,6 +89,7 @@ export const SwapConsolidateDialog: React.FC<SwapConsolidateDialogProps> = ({
     } catch (err) {
       toastError('Consolidation failed', err);
     } finally {
+      releaseLock?.();
       setLoading(false);
     }
   };

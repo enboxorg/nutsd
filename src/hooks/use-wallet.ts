@@ -43,6 +43,7 @@ import {
   type KeysetInfo,
 } from '@/cashu/wallet-ops';
 import { generateP2pkKeyPair, receiveP2pkLocked, type P2pkKeyPair } from '@/cashu/p2pk';
+import { acquireWalletLock } from '@/lib/wallet-mutex';
 
 // ---------------------------------------------------------------------------
 // Domain types — flattened from TypedRecord for the UI layer
@@ -378,8 +379,10 @@ export function useWallet() {
     if (mints.length > 0) {
       refreshProofs();
       refreshKeysets();
-      checkIncomingTransfers();
     }
+    // Incoming transfers are checked regardless of mint count —
+    // transfers can arrive from unknown mints (the redeem flow auto-adds them).
+    checkIncomingTransfers();
   }, [mints, refreshProofs, refreshKeysets, checkIncomingTransfers]);
 
   // --- Subscriptions ---
@@ -928,6 +931,20 @@ export function useWallet() {
    * so it does not reappear on the next startup (idempotency).
    */
   const redeemIncomingTransfer = useCallback(async (transfer: TransferData, index: number) => {
+    if (!p2pkKey?.privateKey) {
+      throw new Error('Cannot redeem P2PK transfer: no private key available');
+    }
+
+    const releaseLock = await acquireWalletLock('p2p-redeem');
+    try {
+      return await _redeemIncomingTransferInner(transfer, index);
+    } finally {
+      releaseLock();
+    }
+  }, [p2pkKey, mints, addMint, addProof, addTransaction]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Inner redeem logic (called under lock). */
+  const _redeemIncomingTransferInner = useCallback(async (transfer: TransferData, index: number) => {
     if (!p2pkKey?.privateKey) {
       throw new Error('Cannot redeem P2PK transfer: no private key available');
     }

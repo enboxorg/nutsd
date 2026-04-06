@@ -26,8 +26,9 @@ import { Toaster } from 'sonner';
 import { QrScanner } from '@/components/wallet/qr-scanner';
 import { PasteActionBar } from '@/components/wallet/paste-action-bar';
 import { detectInput } from '@/lib/input-detect';
-import { receiveToken } from '@/cashu/wallet-ops';
+import { receiveToken, getMintInfo } from '@/cashu/wallet-ops';
 import { extractMintUrl } from '@/cashu/token-utils';
+import { acquireWalletLock } from '@/lib/wallet-mutex';
 
 import { toastError, toastSuccess, formatAmount } from '@/lib/utils';
 import { truncateMiddle } from '@/lib/utils';
@@ -198,13 +199,25 @@ function WalletHome() {
     const detected = detectInput(raw);
     switch (detected.type) {
       case 'cashu-token':
-        setShowReceive(true);
-        // Process the token directly
+        // Process the scanned token with mint-safe ordering
         (async () => {
+          const releaseLock = await acquireWalletLock('scan-receive').catch(() => null);
+          if (!releaseLock) {
+            toastError('Wallet busy', new Error('Another operation is in progress.'));
+            return;
+          }
           try {
             const mintUrl = extractMintUrl(detected.value);
             if (!mintUrl) throw new Error('Could not determine mint URL from token');
-            const knownMint = mints.find(m => m.url === mintUrl);
+
+            // Ensure mint is reachable BEFORE redeeming
+            let knownMint = mints.find(m => m.url === mintUrl);
+            if (!knownMint) {
+              await getMintInfo(mintUrl); // throws if unreachable
+              await storeNewProofsForMintUrl('', [], mintUrl); // auto-add
+              knownMint = mints.find(m => m.url === mintUrl);
+            }
+
             const newProofs = await receiveToken(mintUrl, detected.value);
             const totalReceived = newProofs.reduce((s, p) => s + p.amount, 0);
             const contextId = knownMint?.contextId ?? '';
@@ -212,14 +225,15 @@ function WalletHome() {
             await recordTransaction({
               type   : 'receive',
               amount : totalReceived,
-              unit   : 'sat',
+              unit   : knownMint?.unit ?? 'sat',
               mintUrl,
               status : 'completed',
             });
-            toastSuccess('Token received', `+${totalReceived} sat`);
-            setShowReceive(false);
+            toastSuccess('Token received', `+${totalReceived} ${knownMint?.unit ?? 'sat'}`);
           } catch (err) {
             toastError('Failed to receive token', err);
+          } finally {
+            releaseLock();
           }
         })();
         break;
@@ -246,26 +260,37 @@ function WalletHome() {
   /** Reclaim an unclaimed sent token (NUT-07 reports all proofs UNSPENT). */
   const handleReclaimToken = useCallback(async (tx: Transaction) => {
     if (!tx.cashuToken) throw new Error('No token to reclaim');
-    const mintUrl = tx.mintUrl;
-    const newProofs = await receiveToken(mintUrl, tx.cashuToken, tx.unit);
-    const totalReclaimed = newProofs.reduce((s, p) => s + p.amount, 0);
+    const releaseLock = await acquireWalletLock('reclaim');
+    try {
+      const mintUrl = tx.mintUrl;
 
-    const knownMint = mints.find(m => m.url === mintUrl);
-    const contextId = knownMint?.contextId ?? '';
-    await storeNewProofsForMintUrl(contextId, newProofs, mintUrl);
+      // Ensure mint exists before redeeming (user may have removed mint since sending)
+      let knownMint = mints.find(m => m.url === mintUrl);
+      if (!knownMint) {
+        await getMintInfo(mintUrl); // throws if unreachable
+        await storeNewProofsForMintUrl('', [], mintUrl); // auto-add
+        knownMint = mints.find(m => m.url === mintUrl);
+      }
 
-    await recordTransaction({
-      type   : 'receive',
-      amount : totalReclaimed,
-      unit   : tx.unit,
-      mintUrl,
-      status : 'completed',
-      memo   : 'Reclaimed unclaimed token',
-    });
+      const newProofs = await receiveToken(mintUrl, tx.cashuToken, tx.unit);
+      const totalReclaimed = newProofs.reduce((s, p) => s + p.amount, 0);
+      const contextId = knownMint?.contextId ?? '';
+      await storeNewProofsForMintUrl(contextId, newProofs, mintUrl);
 
-    // Clear the bearer token from the original send transaction
-    clearTransactionToken(tx.id);
-    toastSuccess('Token reclaimed', `+${totalReclaimed} ${tx.unit}`);
+      await recordTransaction({
+        type   : 'receive',
+        amount : totalReclaimed,
+        unit   : tx.unit,
+        mintUrl,
+        status : 'completed',
+        memo   : 'Reclaimed unclaimed token',
+      });
+
+      clearTransactionToken(tx.id);
+      toastSuccess('Token reclaimed', `+${totalReclaimed} ${tx.unit}`);
+    } finally {
+      releaseLock();
+    }
   }, [mints, storeNewProofsForMintUrl, recordTransaction, clearTransactionToken]);
 
   const handleDisconnect = async () => {

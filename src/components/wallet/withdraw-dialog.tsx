@@ -94,7 +94,16 @@ export const WithdrawDialog: React.FC<WithdrawDialogProps> = ({
     busyRef.current = true;
     setLoading(true);
     setStep('paying');
-    const releaseLock = await acquireWalletLock('melt').catch(() => null);
+    let releaseLock: (() => void) | undefined;
+    try {
+      releaseLock = await acquireWalletLock('melt');
+    } catch {
+      toastError('Wallet busy', new Error('Another wallet operation is in progress. Please wait.'));
+      setStep('confirm');
+      setLoading(false);
+      busyRef.current = false;
+      return;
+    }
     try {
       // Snapshot proofs and their DWN IDs before the mint call
       const storedProofs = getUnspentProofs(selectedMint.url);

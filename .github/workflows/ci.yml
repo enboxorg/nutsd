@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Lint, Typecheck & Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Test
+        run: bun run test
+
+  deploy:
+    name: Deploy (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+
+    strategy:
+      matrix:
+        include:
+          - name: nutsd
+            theme: ""
+            project: nutsd
+            environment: production
+            url: https://nutsd.pages.dev
+          - name: dnuts
+            theme: dnuts
+            project: dnuts
+            environment: production-dnuts
+            url: https://dnuts.pages.dev
+
+    permissions:
+      contents: read
+      deployments: write
+
+    environment:
+      name: ${{ matrix.environment }}
+      url: ${{ matrix.url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build
+        run: bun run build
+        env:
+          NODE_ENV: production
+          VITE_PRODUCT_THEME: ${{ matrix.theme }}
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: ${{ matrix.project }}
+          directory: dist
+          branch: main
+
+  # Build-only job for PRs (no deploy)
+  build:
+    name: Build (verify)
+    runs-on: ubuntu-latest
+    needs: check
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build
+        run: bun run build
+        env:
+          NODE_ENV: production

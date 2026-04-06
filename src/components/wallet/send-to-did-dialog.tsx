@@ -69,7 +69,16 @@ export const SendToDIDDialog: React.FC<SendToDIDDialogProps> = ({
     busyRef.current = true;
     setLoading(true);
     setStep('sending');
-    const releaseLock = await acquireWalletLock('p2p-send').catch(() => null);
+    let releaseLock: (() => void) | undefined;
+    try {
+      releaseLock = await acquireWalletLock('p2p-send');
+    } catch {
+      toastError('Wallet busy', new Error('Another wallet operation is in progress. Please wait.'));
+      setStep('amount');
+      setLoading(false);
+      busyRef.current = false;
+      return;
+    }
     try {
       const storedProofs = getUnspentProofs(selectedMint.url);
       const spentIds = storedProofs.map(p => p.id);

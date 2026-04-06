@@ -79,6 +79,8 @@ export function subscribeToQuote({
 
   const fallbackToPolling = () => {
     if (disposed || settled) return;
+    // Clean up the WS expiry timer — the polling fallback handles expiry on its own
+    if (expiryTimerId) { clearTimeout(expiryTimerId); expiryTimerId = undefined; }
     fallbackStop = startMintQuotePolling({
       check: checkFn,
       onPaid: callbacks.onPaid,

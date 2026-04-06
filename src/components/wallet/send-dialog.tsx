@@ -67,7 +67,15 @@ export const SendDialog: React.FC<SendDialogProps> = ({
 
     busyRef.current = true;
     setLoading(true);
-    const releaseLock = await acquireWalletLock('send').catch(() => null);
+    let releaseLock: (() => void) | undefined;
+    try {
+      releaseLock = await acquireWalletLock('send');
+    } catch {
+      toastError('Wallet busy', new Error('Another wallet operation is in progress. Please wait.'));
+      setLoading(false);
+      busyRef.current = false;
+      return;
+    }
     try {
       // Snapshot the proofs we'll use and their DWN record IDs
       const storedProofs = getUnspentProofs(selectedMint.url);
