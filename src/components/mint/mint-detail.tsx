@@ -8,16 +8,28 @@ import {
   ShieldCheckIcon,
   ZapIcon,
   InfoIcon,
+  BarChart3Icon,
 } from 'lucide-react';
 import { formatAmount, truncateMintUrl, toastSuccess, toastError } from '@/lib/utils';
 import { getMintInfo, type MintInfo } from '@/cashu/wallet-ops';
-import type { Mint } from '@/hooks/use-wallet';
+import { SwapConsolidateDialog } from './swap-consolidate-dialog';
+import type { Mint, StoredProof } from '@/hooks/use-wallet';
+import type { Proof } from '@cashu/cashu-ts';
+import type { TransactionData } from '@/protocol/cashu-wallet-protocol';
 
 interface MintDetailProps {
   mint: Mint;
   balance: number;
+  /** Number of unspent proofs at this mint. */
+  proofCount?: number;
   onBack: () => void;
   onDelete: (mintId: string) => void;
+  /** Props for swap/consolidation dialog */
+  getUnspentProofs?: (mintUrl: string) => StoredProof[];
+  onNewProofs?: (mintContextId: string, proofs: Proof[]) => Promise<void>;
+  onOldProofsSpent?: (ids: string[]) => Promise<void>;
+  onMarkPending?: (ids: string[]) => Promise<void>;
+  onTransactionCreated?: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
 }
 
 /** NUT number → short description. */
@@ -42,13 +54,20 @@ const NUT_LABELS: Record<string, string> = {
 export const MintDetail: React.FC<MintDetailProps> = ({
   mint,
   balance,
+  proofCount,
   onBack,
   onDelete,
+  getUnspentProofs,
+  onNewProofs,
+  onOldProofsSpent,
+  onMarkPending,
+  onTransactionCreated,
 }) => {
   const [info, setInfo] = useState<MintInfo | null>(null);
   const [loadingInfo, setLoadingInfo] = useState(false);
   const [copied, setCopied] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [showSwapDialog, setShowSwapDialog] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -143,6 +162,25 @@ export const MintDetail: React.FC<MintDetailProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Proof management */}
+        {getUnspentProofs && proofCount !== undefined && proofCount > 0 && (
+          <div className="rounded-xl bg-card border border-border p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Proofs</div>
+                <div className="text-sm font-medium">{proofCount} proof{proofCount !== 1 ? 's' : ''}</div>
+              </div>
+              <button
+                onClick={() => setShowSwapDialog(true)}
+                className="px-3 py-1.5 rounded-lg border border-border text-xs font-medium hover:bg-muted transition-colors flex items-center gap-1.5"
+              >
+                <BarChart3Icon className="h-3 w-3" />
+                Manage
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Mint Info */}
         <div className="rounded-xl bg-card border border-border overflow-hidden">
@@ -252,6 +290,18 @@ export const MintDetail: React.FC<MintDetailProps> = ({
           )}
         </div>
       </main>
+
+      {showSwapDialog && getUnspentProofs && onNewProofs && onOldProofsSpent && onMarkPending && onTransactionCreated && (
+        <SwapConsolidateDialog
+          mint={mint}
+          getUnspentProofs={getUnspentProofs}
+          onClose={() => setShowSwapDialog(false)}
+          onNewProofs={onNewProofs}
+          onOldProofsSpent={onOldProofsSpent}
+          onMarkPending={onMarkPending}
+          onTransactionCreated={onTransactionCreated}
+        />
+      )}
     </div>
   );
 };

@@ -54,6 +54,8 @@ function WalletHome() {
     transactions,
     totalBalance,
     mintBalances,
+    unitBalances,
+    proofCountByMint,
     mintFeePpk,
     keysetFeeMap,
     pendingProofCount,
@@ -271,8 +273,14 @@ function WalletHome() {
         <MintDetail
           mint={selectedMint}
           balance={mintBalances.get(selectedMint.url) ?? 0}
+          proofCount={proofCountByMint.get(selectedMint.url) ?? 0}
           onBack={() => setSelectedMint(null)}
           onDelete={(id) => { removeMint(id); setSelectedMint(null); }}
+          getUnspentProofs={getUnspentProofsForMint}
+          onNewProofs={storeNewProofs}
+          onOldProofsSpent={removeProofsByIds}
+          onMarkPending={markProofsPending}
+          onTransactionCreated={recordTransaction}
         />
         {showAddMint && (
           <AddMintDialog onAdd={handleAddMint} onClose={() => setShowAddMint(false)} />
@@ -335,6 +343,7 @@ function WalletHome() {
               totalBalance={totalBalance}
               unit="sat"
               mintCount={mints.length}
+              unitBalances={unitBalances}
             />
 
             <ActionButtons
