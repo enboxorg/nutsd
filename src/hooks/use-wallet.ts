@@ -44,6 +44,8 @@ import {
   type KeysetInfo,
 } from '@/cashu/wallet-ops';
 import { generateP2pkKeyPair, receiveP2pkLocked, type P2pkKeyPair } from '@/cashu/p2pk';
+// proof-stash-recovery.ts exports the testable pure function — used in tests.
+// The hook's recoverProofStashes() wraps the same logic with DWN record access.
 import { acquireWalletLock } from '@/lib/wallet-mutex';
 
 // ---------------------------------------------------------------------------
@@ -375,15 +377,36 @@ export function useWallet() {
       .finally(() => setLoading(false));
   }, [repo, refreshMints, refreshTransactions, refreshPreferences, loadP2pkKey]);
 
-  // Proofs and keysets depend on mints being loaded
+  // Proofs/keysets load after mints; startup recovery runs once proofs are loaded.
+  const startupRecoveryDone = useRef(false);
+  const startupRecoveryRef = useRef<() => Promise<void>>(async () => {});
+
   useEffect(() => {
-    if (mints.length > 0) {
-      refreshProofs();
-      refreshKeysets();
-    }
-    // Incoming transfers are checked regardless of mint count —
-    // transfers can arrive from unknown mints (the redeem flow auto-adds them).
-    checkIncomingTransfers();
+    let cancelled = false;
+
+    (async () => {
+      // Load proofs and keysets (depend on mints being present)
+      if (mints.length > 0) {
+        await refreshProofs();
+        await refreshKeysets();
+      }
+      // Incoming transfers checked regardless of mint count
+      await checkIncomingTransfers();
+
+      // Startup recovery: runs ONCE, AFTER proofs are loaded.
+      // recoverProofStashes needs existing proofs for deduplication.
+      // reconcilePendingProofs needs loaded proofs to find pending ones.
+      if (!cancelled && !startupRecoveryDone.current) {
+        startupRecoveryDone.current = true;
+        try {
+          await startupRecoveryRef.current();
+        } catch (err) {
+          console.error('[nutsd] Startup recovery failed:', err);
+        }
+      }
+    })();
+
+    return () => { cancelled = true; };
   }, [mints, refreshProofs, refreshKeysets, checkIncomingTransfers]);
 
   // --- Subscriptions ---
@@ -1036,6 +1059,15 @@ export function useWallet() {
       console.error('[nutsd] Proof stash recovery failed:', err);
     }
   }, [repo, mints, addMint, addProof]);
+
+  // Wire startup recovery ref — called by the mints-dependent effect above
+  // AFTER proofs are loaded, ensuring dedup and reconciliation have data.
+  useEffect(() => {
+    startupRecoveryRef.current = async () => {
+      await recoverProofStashes();
+      await reconcilePendingProofs();
+    };
+  }, [recoverProofStashes, reconcilePendingProofs]);
 
   // =========================================================================
   // Transaction CRUD

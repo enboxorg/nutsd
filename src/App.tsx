@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback } from 'react';
 
 import { ThemeProvider, useTheme } from '@/components/theme-provider';
 import { ErrorBoundary } from '@/components/error-boundary';
@@ -76,9 +76,7 @@ function WalletHome() {
     getUnspentProofsForMint,
     markProofsPending,
     revertProofsToUnspent,
-    reconcilePendingProofs,
     safeStoreReceivedProofs,
-    recoverProofStashes,
     incomingTransfers,
     checkIncomingTransfers,
     redeemIncomingTransfer,
@@ -98,23 +96,9 @@ function WalletHome() {
 
   const hasMints = mints.length > 0;
 
-  // --- Startup reconciliation ---
-  // Run once after initial proofs load. Recovers stashes and reconciles pending proofs.
-  const reconciliationDone = useRef(false);
-  useEffect(() => {
-    if (!loading && !reconciliationDone.current) {
-      reconciliationDone.current = true;
-      // Proof stash recovery runs first — fills in proofs from incomplete receives.
-      // Then pending proof reconciliation checks with mints via NUT-07.
-      recoverProofStashes()
-        .then(() => reconcilePendingProofs())
-        .catch((err: unknown) =>
-          console.error('[nutsd] Startup recovery failed:', err),
-        );
-    }
-  }, [loading, recoverProofStashes, reconcilePendingProofs]);
-
   // --- Proof persistence helpers ---
+  // Startup recovery (stash + pending reconciliation) is handled inside
+  // useWallet() hook, sequenced AFTER proofs are loaded.
 
   /**
    * Store Cashu proofs as DWN records using the crash-safe stash pattern.
