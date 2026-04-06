@@ -19,8 +19,8 @@
  * ENCRYPTION:
  * Sensitive types (proof, keyset, transaction) have `encryptionRequired: true`.
  * The DWN encrypts record data using protocol-path-derived keys from the
- * tenant DID's X25519 keyAgreement key. This requires a local/owner DID --
- * delegate (wallet-connect) mode cannot encrypt and is blocked at the UI.
+ * tenant DID's X25519 keyAgreement key. Local owner sessions and delegated
+ * wallet-connect sessions are both supported by the latest Enbox auth stack.
  *
  * TAG POLICY:
  * Encrypted record types (proof, keyset, transaction) carry NO tags.
@@ -54,12 +54,11 @@ export type MintData = {
 };
 
 /**
- * Keyset record (reserved protocol path for future use).
+ * Keyset record — cached mint keyset metadata.
  *
- * Keysets are currently managed in-memory by cashu-ts via Wallet.loadMint().
- * This type exists to reserve the protocol path but no keyset records are
- * written today. When NUT-13 deterministic secrets are implemented, keyset
- * persistence will be needed for counter tracking.
+ * Written as children of mint records when a mint is added or keysets rotate.
+ * Stores the input fee rate (NUT-02), active status, and unit for each
+ * keyset. This enables fee-aware proof selection and multi-unit support.
  */
 export type KeysetData = {
   /** Keyset ID (hex string). */
@@ -77,6 +76,14 @@ export type KeysetData = {
  *
  * Each proof is stored as a separate DWN record under its mint's context.
  * This enables granular spending without rewriting entire proof sets.
+ *
+ * The `state` field tracks the proof lifecycle for crash safety:
+ * - `unspent`: available for spending (default, omitted for backward compat)
+ * - `pending`: submitted to a mint operation, outcome unknown
+ *
+ * On startup, proofs in `pending` state are reconciled with the mint via
+ * NUT-07. If the mint reports them as UNSPENT, they revert. If SPENT, they
+ * are deleted. If still PENDING at the mint, they remain pending.
  */
 export type ProofData = {
   /** Value of this proof in the mint's unit. */
@@ -87,6 +94,11 @@ export type ProofData = {
   secret: string;
   /** Unblinded signature (hex string). */
   C: string;
+  /**
+   * Proof lifecycle state. Defaults to `'unspent'` when absent
+   * (backward compat with records written before state tracking).
+   */
+  state?: ProofState;
   /** Optional DLEQ proof (NUT-12). */
   dleq?: {
     e: string;

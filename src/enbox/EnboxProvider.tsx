@@ -1,8 +1,11 @@
-import React, { createContext, useCallback, useEffect, useRef, useState } from 'react';
+import React, { createContext, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { AuthManager } from '@enbox/auth';
 import type { AuthSession } from '@enbox/auth';
+import { BrowserConnectHandler } from '@enbox/browser';
 import { Enbox } from '@enbox/api';
+import { CashuWalletDefinition } from '@/protocol/cashu-wallet-protocol';
+import { brand } from '@/lib/brand';
 
 // Protocol is auto-configured via repository().configure() in use-wallet.ts
 
@@ -21,11 +24,10 @@ interface EnboxContextProps {
   isConnected: boolean;
   /**
    * Create a new local DID (owner identity with X25519 encryption keys).
-   * This is the only supported connect mode for nutsd because encrypted
-   * record types require the owner's private keys for encryption/decryption.
-   * Delegate/wallet-connect mode cannot encrypt and is blocked.
    */
   connectLocal: () => Promise<void>;
+  /** Connect to an external Enbox wallet via delegated wallet-connect. */
+  connectWallet: () => Promise<void>;
   /** Disconnect (clean by default, nuclear if clearStorage is true). */
   disconnect: (options?: { clearStorage?: boolean }) => Promise<void>;
   /** The recovery phrase shown on first-time local connect. */
@@ -38,6 +40,7 @@ export const EnboxContext = createContext<EnboxContextProps>({
   isConnecting        : false,
   isConnected         : false,
   connectLocal        : () => Promise.reject(new Error('EnboxProvider not mounted')),
+  connectWallet       : () => Promise.reject(new Error('EnboxProvider not mounted')),
   disconnect          : () => Promise.reject(new Error('EnboxProvider not mounted')),
   clearRecoveryPhrase : () => {},
 });
@@ -53,6 +56,19 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [isConnecting, setIsConnecting] = useState(false);
   const [recoveryPhrase, setRecoveryPhrase] = useState<string | undefined>();
 
+  const walletOptions = useMemo(
+    () => brand.preferredWalletUrl === 'https://blue-enbox-wallet.pages.dev/'
+      ? [
+          { name: 'Blue Enbox Wallet', url: 'https://blue-enbox-wallet.pages.dev/' },
+          { name: 'Enbox Wallet', url: 'https://enbox-wallet.pages.dev/' },
+        ]
+      : [
+          { name: 'Enbox Wallet', url: 'https://enbox-wallet.pages.dev/' },
+          { name: 'Blue Enbox Wallet', url: 'https://blue-enbox-wallet.pages.dev/' },
+        ],
+    [],
+  );
+
   const applySession = useCallback((session: AuthSession) => {
     const api = Enbox.connect({ session });
     setEnbox(api);
@@ -63,20 +79,20 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   // ── Bootstrap: create AuthManager once, then auto-restore ────────
-  // NOTE: No BrowserConnectHandler — wallet-connect/delegate mode is
-  // intentionally disabled. Delegate DIDs lack X25519 encryption keys,
-  // so writes to encryptionRequired types would fail. See P0-1.
   useEffect(() => {
     let cancelled = false;
 
     async function init() {
       setIsConnecting(true);
       try {
-        const auth = await AuthManager.create();
+        authRef.current = await AuthManager.create({
+          connectHandler: BrowserConnectHandler({
+            wallets: walletOptions,
+          }),
+        });
         if (cancelled) return;
-        authRef.current = auth;
 
-        const session = await auth.restoreSession();
+        const session = await authRef.current.restoreSession();
         if (cancelled) return;
 
         if (session) {
@@ -91,7 +107,7 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     init();
     return () => { cancelled = true; };
-  }, [applySession]);
+  }, [applySession, walletOptions]);
 
   // ── Connect local: create a new DID with full key material ──────
   // Creates a did:dht with Ed25519 (signing) + X25519 (encryption).
@@ -104,6 +120,21 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     try {
       const session = await auth.connectLocal({
         createIdentity: true,
+      });
+      applySession(session);
+    } finally {
+      setIsConnecting(false);
+    }
+  }, [applySession]);
+
+  const connectWallet = useCallback(async () => {
+    const auth = authRef.current;
+    if (!auth) throw new Error('AuthManager not ready');
+
+    setIsConnecting(true);
+    try {
+      const session = await auth.connect({
+        protocols: [CashuWalletDefinition],
       });
       applySession(session);
     } finally {
@@ -140,6 +171,7 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         isConnecting,
         isConnected,
         connectLocal,
+        connectWallet,
         disconnect,
         recoveryPhrase,
         clearRecoveryPhrase,
