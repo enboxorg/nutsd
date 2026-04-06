@@ -20,7 +20,7 @@
  */
 
 import type { ProtocolDefinition } from '@enbox/dwn-sdk-js';
-import { defineProtocol } from '@enbox/api';
+import { defineProtocol } from '@enbox/browser';
 import { isValidP2pkPublicKey } from '@/cashu/p2pk';
 import { isP2pkLockedToken } from '@/cashu/token-utils';
 

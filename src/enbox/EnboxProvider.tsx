@@ -1,9 +1,7 @@
 import React, { createContext, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { AuthManager } from '@enbox/auth';
-import type { AuthSession } from '@enbox/auth';
-import { BrowserConnectHandler } from '@enbox/browser';
-import { Enbox } from '@enbox/api';
+import { AuthManager, BrowserConnectHandler, Enbox } from '@enbox/browser';
+import type { AuthSession } from '@enbox/browser';
 import { CashuWalletDefinition } from '@/protocol/cashu-wallet-protocol';
 import { brand } from '@/lib/brand';
 
@@ -22,12 +20,16 @@ interface EnboxContextProps {
   isConnecting: boolean;
   /** Whether a session is active. */
   isConnected: boolean;
+  /** The underlying AuthManager (for advanced flows like QR connect). */
+  auth: AuthManager | null;
   /**
    * Create a new local DID (owner identity with X25519 encryption keys).
    */
   connectLocal: () => Promise<void>;
   /** Connect to an external Enbox wallet via delegated wallet-connect. */
   connectWallet: () => Promise<void>;
+  /** Apply a session obtained from an external flow (e.g. QR connect). */
+  applySession: (session: AuthSession) => void;
   /** Disconnect (clean by default, nuclear if clearStorage is true). */
   disconnect: (options?: { clearStorage?: boolean }) => Promise<void>;
   /** The recovery phrase shown on first-time local connect. */
@@ -39,8 +41,10 @@ interface EnboxContextProps {
 export const EnboxContext = createContext<EnboxContextProps>({
   isConnecting        : false,
   isConnected         : false,
+  auth                : null,
   connectLocal        : () => Promise.reject(new Error('EnboxProvider not mounted')),
   connectWallet       : () => Promise.reject(new Error('EnboxProvider not mounted')),
+  applySession        : () => {},
   disconnect          : () => Promise.reject(new Error('EnboxProvider not mounted')),
   clearRecoveryPhrase : () => {},
 });
@@ -59,12 +63,12 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const walletOptions = useMemo(
     () => brand.preferredWalletUrl === 'https://blue-enbox-wallet.pages.dev/'
       ? [
-          { name: 'Blue Enbox Wallet', url: 'https://blue-enbox-wallet.pages.dev/' },
-          { name: 'Enbox Wallet', url: 'https://enbox-wallet.pages.dev/' },
+          { name: 'Blue Enbox Wallet', url: 'https://blue-enbox-wallet.pages.dev', description: 'Your digital identity wallet' },
+          { name: 'Enbox Wallet', url: 'https://enbox-wallet.pages.dev', description: 'Your digital identity wallet' },
         ]
       : [
-          { name: 'Enbox Wallet', url: 'https://enbox-wallet.pages.dev/' },
-          { name: 'Blue Enbox Wallet', url: 'https://blue-enbox-wallet.pages.dev/' },
+          { name: 'Enbox Wallet', url: 'https://enbox-wallet.pages.dev', description: 'Your digital identity wallet' },
+          { name: 'Blue Enbox Wallet', url: 'https://blue-enbox-wallet.pages.dev', description: 'Your digital identity wallet' },
         ],
     [],
   );
@@ -87,13 +91,15 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       try {
         authRef.current = await AuthManager.create({
           connectHandler: BrowserConnectHandler({
-            wallets: walletOptions,
+            wallets : walletOptions,
+            appName : brand.name,
+            appIcon : `${window.location.origin}/favicon.ico`,
           }),
         });
-        if (cancelled) return;
+        if (cancelled) { return; }
 
         const session = await authRef.current.restoreSession();
-        if (cancelled) return;
+        if (cancelled) { return; }
 
         if (session) {
           applySession(session);
@@ -101,7 +107,7 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       } catch (err) {
         console.error('[nutsd] Auth init failed:', err);
       } finally {
-        if (!cancelled) setIsConnecting(false);
+        if (!cancelled) { setIsConnecting(false); }
       }
     }
 
@@ -111,10 +117,9 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   // ── Connect local: create a new DID with full key material ──────
   // Creates a did:dht with Ed25519 (signing) + X25519 (encryption).
-  // This is the only mode that can write encrypted DWN records.
   const connectLocal = useCallback(async () => {
     const auth = authRef.current;
-    if (!auth) throw new Error('AuthManager not ready');
+    if (!auth) { throw new Error('AuthManager not ready'); }
 
     setIsConnecting(true);
     try {
@@ -129,7 +134,7 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const connectWallet = useCallback(async () => {
     const auth = authRef.current;
-    if (!auth) throw new Error('AuthManager not ready');
+    if (!auth) { throw new Error('AuthManager not ready'); }
 
     setIsConnecting(true);
     try {
@@ -145,7 +150,7 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   // ── Disconnect ───────────────────────────────────────────────────
   const disconnect = useCallback(async (options?: { clearStorage?: boolean }) => {
     const auth = authRef.current;
-    if (!auth) return;
+    if (!auth) { return; }
 
     await auth.disconnect({ clearStorage: options?.clearStorage });
     setEnbox(undefined);
@@ -170,8 +175,10 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         did,
         isConnecting,
         isConnected,
+        auth                : authRef.current,
         connectLocal,
         connectWallet,
+        applySession,
         disconnect,
         recoveryPhrase,
         clearRecoveryPhrase,

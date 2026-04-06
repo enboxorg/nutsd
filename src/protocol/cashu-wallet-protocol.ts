@@ -33,7 +33,7 @@
  */
 
 import type { ProtocolDefinition } from '@enbox/dwn-sdk-js';
-import { defineProtocol } from '@enbox/api';
+import { defineProtocol } from '@enbox/browser';
 
 // ---------------------------------------------------------------------------
 // Data types

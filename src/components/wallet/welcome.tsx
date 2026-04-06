@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { ShieldIcon, RefreshCwIcon, ZapIcon } from 'lucide-react';
 import { useEnbox } from '@/enbox';
-import { ConnectSelector } from '@/components/connect/connect-selector';
+import { ConnectModal } from '@/components/connect/connect-modal';
 import { brand } from '@/lib/brand';
 
 export const Welcome: React.FC = () => {
@@ -52,22 +52,22 @@ export const Welcome: React.FC = () => {
           </div>
         </div>
 
-        {/* Connect */}
+        {/* Connect CTA */}
         {isConnecting ? (
           <div className="text-sm text-muted-foreground animate-pulse">
-            Connecting...
+            Restoring session...
           </div>
-        ) : showConnect ? (
-          <ConnectSelector close={() => setShowConnect(false)} />
         ) : (
           <button
             onClick={() => setShowConnect(true)}
             className="w-full px-6 py-3 rounded-full bg-primary text-primary-foreground font-medium text-sm hover:opacity-90 transition-opacity"
           >
-            Create Identity
+            Get Started
           </button>
         )}
       </div>
+
+      <ConnectModal open={showConnect} onClose={() => setShowConnect(false)} />
     </div>
   );
 };
