@@ -3,6 +3,7 @@ import { Loader2Icon, XIcon, UsersIcon, KeyIcon } from 'lucide-react';
 import { toastError, toastSuccess, truncateMintUrl, formatAmount } from '@/lib/utils';
 import { sendP2pkLocked, isValidP2pkPublicKey } from '@/cashu/p2pk';
 import { encodeToken } from '@/cashu/token-utils';
+import { acquireWalletLock } from '@/lib/wallet-mutex';
 import { CashuTransferProtocol, assertP2PKLocked, type TransferData } from '@/protocol/cashu-transfer-protocol';
 import type { Mint, StoredProof } from '@/hooks/use-wallet';
 import type { Proof } from '@cashu/cashu-ts';
@@ -68,6 +69,7 @@ export const SendToDIDDialog: React.FC<SendToDIDDialogProps> = ({
     busyRef.current = true;
     setLoading(true);
     setStep('sending');
+    const releaseLock = await acquireWalletLock('p2p-send').catch(() => null);
     try {
       const storedProofs = getUnspentProofs(selectedMint.url);
       const spentIds = storedProofs.map(p => p.id);
@@ -148,6 +150,7 @@ export const SendToDIDDialog: React.FC<SendToDIDDialogProps> = ({
       setErrorMsg(err instanceof Error ? err.message : String(err));
       setStep('error');
     } finally {
+      releaseLock?.();
       setLoading(false);
       busyRef.current = false;
     }

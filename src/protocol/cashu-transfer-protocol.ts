@@ -22,6 +22,7 @@
 import type { ProtocolDefinition } from '@enbox/dwn-sdk-js';
 import { defineProtocol } from '@enbox/api';
 import { isValidP2pkPublicKey } from '@/cashu/p2pk';
+import { isP2pkLockedToken } from '@/cashu/token-utils';
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -95,15 +96,16 @@ export const CashuTransferDefinition = {
 // ---------------------------------------------------------------------------
 
 /**
- * Validate that a transfer record contains a P2PK-locked token.
+ * Validate that a transfer record contains a properly P2PK-locked token.
  *
- * Checks:
- * 1. `recipientPubkey` is a valid compressed secp256k1 public key
- * 2. `token` is present and non-empty
- * 3. `senderDid` is present
+ * Performs two layers of validation:
+ * 1. **Metadata validation**: token present, senderDid present, recipientPubkey
+ *    is a valid compressed secp256k1 key.
+ * 2. **Token-level verification**: the encoded Cashu token actually contains
+ *    NUT-10/11 P2PK spending conditions in its proof secrets. This prevents
+ *    a sender from claiming P2PK protection while including unlocked proofs.
  *
  * This MUST be called before writing any transfer record to the DWN.
- * It replaces the old `assertTransferProtocolDisabled()`.
  *
  * @throws if any validation fails
  */
@@ -124,6 +126,16 @@ export function assertP2PKLocked(data: TransferData): void {
     throw new Error(
       `Invalid recipientPubkey: ${data.recipientPubkey}. ` +
       'Expected a compressed secp256k1 public key (02... or 03... hex).',
+    );
+  }
+  // Verify the token actually contains P2PK-locked proofs.
+  // Without this check, a sender could pass metadata validation while
+  // including an unlocked token — which a DWN operator could steal.
+  if (!isP2pkLockedToken(data.token)) {
+    throw new Error(
+      'Transfer token is not P2PK-locked. The Cashu token must contain NUT-11 ' +
+      'P2PK spending conditions in all proof secrets. Unlocked tokens cannot ' +
+      'be safely transferred via DWN.',
     );
   }
 }

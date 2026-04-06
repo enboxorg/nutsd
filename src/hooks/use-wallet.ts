@@ -134,6 +134,8 @@ export function useWallet() {
 
   // --- DWN record cache (for in-place updates) ---
   const proofRecordCache = useRef<Map<string, any>>(new Map());
+  // --- Transfer record cache (for deletion after redemption) ---
+  const incomingTransferRecordsRef = useRef<Array<{ data: TransferData; record: any }>>([]);
 
   // Initialize repo when connected, install protocol
   useEffect(() => {
@@ -331,7 +333,12 @@ export function useWallet() {
     }
   }, [repo]);
 
-  /** Query the user's DWN for incoming transfer protocol records. */
+  /**
+   * Query the user's DWN for incoming transfer protocol records.
+   *
+   * Stores both the transfer data AND the DWN record reference so we can
+   * delete the record after successful redemption (idempotency).
+   */
   const checkIncomingTransfers = useCallback(async () => {
     const transferTyped = transferTypedRef.current;
     if (!transferTyped) return;
@@ -339,16 +346,20 @@ export function useWallet() {
       const { records } = await transferTyped.records.query({
         protocolPath: 'transfer',
       });
-      if (!records || records.length === 0) return;
+      if (!records || records.length === 0) {
+        setIncomingTransfers([]);
+        return;
+      }
 
-      const transfers: TransferData[] = [];
+      const transfers: Array<{ data: TransferData; record: any }> = [];
       for (const record of records) {
         try {
           const data: TransferData = await record.data.json();
-          transfers.push(data);
+          transfers.push({ data, record });
         } catch { /* skip unreadable records */ }
       }
-      setIncomingTransfers(transfers);
+      incomingTransferRecordsRef.current = transfers;
+      setIncomingTransfers(transfers.map(t => t.data));
     } catch (err) {
       console.warn('[nutsd] Failed to check incoming transfers:', err);
     }
@@ -905,33 +916,62 @@ export function useWallet() {
   // Incoming P2P transfers
   // =========================================================================
 
+  /**
+   * Redeem an incoming P2PK-locked transfer.
+   *
+   * SAFETY: Ensures the mint is known (auto-adds if reachable) BEFORE
+   * redeeming. This prevents the fund-loss scenario where proofs are
+   * redeemed from the mint but never persisted because no local mint
+   * record exists.
+   *
+   * After successful redemption, deletes the transfer record from the DWN
+   * so it does not reappear on the next startup (idempotency).
+   */
   const redeemIncomingTransfer = useCallback(async (transfer: TransferData, index: number) => {
     if (!p2pkKey?.privateKey) {
       throw new Error('Cannot redeem P2PK transfer: no private key available');
     }
 
-    // Redeem the P2PK-locked token
+    // STEP 1: Ensure the mint is known. If not, auto-add it.
+    // This MUST happen before redemption to guarantee proofs can be persisted.
+    let mint = mints.find(m => m.url === transfer.mintUrl);
+    if (!mint) {
+      // Auto-add the mint. If unreachable, this throws and we do NOT redeem.
+      const newMint = await addMint({
+        url    : transfer.mintUrl,
+        unit   : transfer.unit,
+        active : true,
+      });
+      if (!newMint) {
+        throw new Error(
+          `Cannot redeem: mint ${transfer.mintUrl} is unreachable. ` +
+          'Add the mint manually first, then try again.',
+        );
+      }
+      mint = newMint;
+    }
+
+    // STEP 2: Redeem the P2PK-locked token with the mint.
     const newProofs = await receiveP2pkLocked(
       transfer.mintUrl, transfer.token, p2pkKey.privateKey, transfer.unit,
     );
 
-    // Store the fresh proofs
-    const mint = mints.find(m => m.url === transfer.mintUrl);
-    if (mint) {
-      for (const proof of newProofs) {
-        await addProof(mint.contextId, {
-          amount  : proof.amount,
-          id      : proof.id,
-          secret  : proof.secret,
-          C       : proof.C,
-          state   : 'unspent',
-          dleq    : proof.dleq ? { e: String(proof.dleq.e), s: String(proof.dleq.s), r: String(proof.dleq.r) } : undefined,
-          witness : proof.witness ? (typeof proof.witness === 'string' ? proof.witness : JSON.stringify(proof.witness)) : undefined,
-        });
-      }
+    // STEP 3: Persist the fresh proofs. This MUST succeed — the mint has
+    // already issued them. If DWN write fails, we throw and leave the
+    // transfer record intact so the user can retry.
+    for (const proof of newProofs) {
+      await addProof(mint.contextId, {
+        amount  : proof.amount,
+        id      : proof.id,
+        secret  : proof.secret,
+        C       : proof.C,
+        state   : 'unspent',
+        dleq    : proof.dleq ? { e: String(proof.dleq.e), s: String(proof.dleq.s), r: String(proof.dleq.r) } : undefined,
+        witness : proof.witness ? (typeof proof.witness === 'string' ? proof.witness : JSON.stringify(proof.witness)) : undefined,
+      });
     }
 
-    // Record transaction
+    // STEP 4: Record the transaction.
     const totalReceived = newProofs.reduce((s, p) => s + p.amount, 0);
     await addTransaction({
       type       : 'p2p-receive',
@@ -944,9 +984,23 @@ export function useWallet() {
       createdAt  : new Date().toISOString(),
     });
 
-    // Remove from pending
+    // STEP 5: Delete the transfer record from the DWN so it does not
+    // come back on the next startup. This is best-effort — if deletion
+    // fails, the user will see the transfer again but the re-claim
+    // attempt will fail at the mint (tokens already swapped).
+    try {
+      const transferEntry = incomingTransferRecordsRef.current[index];
+      if (transferEntry?.record) {
+        await transferEntry.record.delete();
+      }
+    } catch (err) {
+      console.warn('[nutsd] Failed to delete claimed transfer record:', err);
+    }
+
+    // STEP 6: Remove from local UI state.
+    incomingTransferRecordsRef.current = incomingTransferRecordsRef.current.filter((_, i) => i !== index);
     setIncomingTransfers(prev => prev.filter((_, i) => i !== index));
-  }, [p2pkKey, mints, addProof, addTransaction]);
+  }, [p2pkKey, mints, addMint, addProof, addTransaction]);
 
   // =========================================================================
   // Preferences

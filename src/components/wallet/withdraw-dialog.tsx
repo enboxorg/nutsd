@@ -2,6 +2,7 @@ import { useState, useRef } from 'react';
 import { Loader2Icon, XIcon, ArrowUpIcon } from 'lucide-react';
 import { toastError, toastSuccess, truncateMintUrl, formatAmount } from '@/lib/utils';
 import { createMeltQuote, meltTokens, estimateInputFee } from '@/cashu/wallet-ops';
+import { acquireWalletLock } from '@/lib/wallet-mutex';
 import type { Mint, StoredProof } from '@/hooks/use-wallet';
 import type { Proof } from '@cashu/cashu-ts';
 import type { MeltQuoteBolt11Response } from '@/cashu/wallet-ops';
@@ -93,6 +94,7 @@ export const WithdrawDialog: React.FC<WithdrawDialogProps> = ({
     busyRef.current = true;
     setLoading(true);
     setStep('paying');
+    const releaseLock = await acquireWalletLock('melt').catch(() => null);
     try {
       // Snapshot proofs and their DWN IDs before the mint call
       const storedProofs = getUnspentProofs(selectedMint.url);
@@ -148,6 +150,7 @@ export const WithdrawDialog: React.FC<WithdrawDialogProps> = ({
       setErrorMsg(err instanceof Error ? err.message : String(err));
       setStep('error');
     } finally {
+      releaseLock?.();
       setLoading(false);
       busyRef.current = false;
     }

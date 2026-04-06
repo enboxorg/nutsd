@@ -3,6 +3,7 @@ import { Loader2Icon, XIcon, SendIcon, CopyIcon, CheckIcon } from 'lucide-react'
 import { toastError, toastSuccess, truncateMintUrl, formatAmount } from '@/lib/utils';
 import { swapProofs, estimateInputFee } from '@/cashu/wallet-ops';
 import { encodeToken } from '@/cashu/token-utils';
+import { acquireWalletLock } from '@/lib/wallet-mutex';
 import type { Mint, StoredProof } from '@/hooks/use-wallet';
 import type { Proof } from '@cashu/cashu-ts';
 import type { TransactionData } from '@/protocol/cashu-wallet-protocol';
@@ -66,6 +67,7 @@ export const SendDialog: React.FC<SendDialogProps> = ({
 
     busyRef.current = true;
     setLoading(true);
+    const releaseLock = await acquireWalletLock('send').catch(() => null);
     try {
       // Snapshot the proofs we'll use and their DWN record IDs
       const storedProofs = getUnspentProofs(selectedMint.url);
@@ -115,6 +117,7 @@ export const SendDialog: React.FC<SendDialogProps> = ({
       // On error, proofs are pending. reconcilePendingProofs() handles recovery.
       toastError('Failed to create token', err);
     } finally {
+      releaseLock?.();
       setLoading(false);
       busyRef.current = false;
     }
