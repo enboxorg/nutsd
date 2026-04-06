@@ -155,6 +155,125 @@ describe('Proof stash deduplication logic', () => {
   });
 });
 
+describe('Proof stash replay with failures', () => {
+  /**
+   * Simulates recoverProofStashes() replay logic with injected failures.
+   *
+   * This mirrors the actual code in use-wallet.ts:
+   * - iterates stash proofs
+   * - skips already-written (dedup by secret)
+   * - attempts to write missing ones
+   * - tracks failures
+   * - returns whether the stash should be deleted
+   */
+  function simulateReplay(
+    stash: ProofStashData,
+    existingSecrets: Set<string>,
+    failOnSecrets: Set<string>,
+  ): { recovered: number; failed: number; shouldDeleteStash: boolean; remainingForRetry: string[] } {
+    let recovered = 0;
+    let failed = 0;
+    const remainingForRetry: string[] = [];
+
+    for (const proof of stash.proofs) {
+      if (existingSecrets.has(proof.secret)) continue; // already written
+      if (failOnSecrets.has(proof.secret)) {
+        failed++;
+        remainingForRetry.push(proof.secret);
+        continue; // simulate addProof failure
+      }
+      recovered++;
+      existingSecrets.add(proof.secret); // simulate successful write
+    }
+
+    return {
+      recovered,
+      failed,
+      shouldDeleteStash: failed === 0,
+      remainingForRetry,
+    };
+  }
+
+  it('deletes stash when all proofs recovered successfully', () => {
+    const stash: ProofStashData = {
+      mintUrl: 'https://mint.example.com', mintContextId: 'ctx', unit: 'sat',
+      proofs: [makeProofData(4, 'a'), makeProofData(2, 'b'), makeProofData(1, 'c')],
+      createdAt: new Date().toISOString(),
+    };
+
+    const result = simulateReplay(stash, new Set(), new Set());
+    expect(result.recovered).toBe(3);
+    expect(result.failed).toBe(0);
+    expect(result.shouldDeleteStash).toBe(true);
+    expect(result.remainingForRetry).toHaveLength(0);
+  });
+
+  it('preserves stash when some proofs fail to write', () => {
+    const stash: ProofStashData = {
+      mintUrl: 'https://mint.example.com', mintContextId: 'ctx', unit: 'sat',
+      proofs: [makeProofData(4, 'a'), makeProofData(2, 'b'), makeProofData(1, 'c')],
+      createdAt: new Date().toISOString(),
+    };
+
+    // Proof 'b' fails to write
+    const result = simulateReplay(stash, new Set(), new Set(['b']));
+    expect(result.recovered).toBe(2);
+    expect(result.failed).toBe(1);
+    expect(result.shouldDeleteStash).toBe(false);
+    expect(result.remainingForRetry).toEqual(['b']);
+  });
+
+  it('preserves stash when all proofs fail to write', () => {
+    const stash: ProofStashData = {
+      mintUrl: 'https://mint.example.com', mintContextId: 'ctx', unit: 'sat',
+      proofs: [makeProofData(4, 'a'), makeProofData(2, 'b')],
+      createdAt: new Date().toISOString(),
+    };
+
+    const result = simulateReplay(stash, new Set(), new Set(['a', 'b']));
+    expect(result.recovered).toBe(0);
+    expect(result.failed).toBe(2);
+    expect(result.shouldDeleteStash).toBe(false);
+    expect(result.remainingForRetry).toEqual(['a', 'b']);
+  });
+
+  it('retry succeeds after previous partial failure', () => {
+    const stash: ProofStashData = {
+      mintUrl: 'https://mint.example.com', mintContextId: 'ctx', unit: 'sat',
+      proofs: [makeProofData(4, 'a'), makeProofData(2, 'b'), makeProofData(1, 'c')],
+      createdAt: new Date().toISOString(),
+    };
+
+    // First attempt: 'a' succeeds, 'b' fails, 'c' succeeds
+    const existing = new Set<string>();
+    const attempt1 = simulateReplay(stash, existing, new Set(['b']));
+    expect(attempt1.recovered).toBe(2);
+    expect(attempt1.failed).toBe(1);
+    expect(attempt1.shouldDeleteStash).toBe(false);
+    // existing now has 'a' and 'c'
+
+    // Second attempt: 'a' and 'c' are deduped, 'b' succeeds this time
+    const attempt2 = simulateReplay(stash, existing, new Set());
+    expect(attempt2.recovered).toBe(1); // only 'b' was missing
+    expect(attempt2.failed).toBe(0);
+    expect(attempt2.shouldDeleteStash).toBe(true);
+  });
+
+  it('skips already-written proofs without counting as failures', () => {
+    const stash: ProofStashData = {
+      mintUrl: 'https://mint.example.com', mintContextId: 'ctx', unit: 'sat',
+      proofs: [makeProofData(4, 'a'), makeProofData(2, 'b')],
+      createdAt: new Date().toISOString(),
+    };
+
+    // Both already written
+    const result = simulateReplay(stash, new Set(['a', 'b']), new Set());
+    expect(result.recovered).toBe(0);
+    expect(result.failed).toBe(0);
+    expect(result.shouldDeleteStash).toBe(true); // safe to delete — all accounted for
+  });
+});
+
 describe('Proof stash failure mode analysis', () => {
   it('documents the crash windows and their outcomes', () => {
     // This test documents the failure modes rather than testing code.

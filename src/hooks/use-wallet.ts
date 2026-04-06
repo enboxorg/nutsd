@@ -993,28 +993,39 @@ export function useWallet() {
             }
           } catch { /* no existing proofs */ }
 
-          // Write missing proofs
+          // Write missing proofs, tracking failures
           let recovered = 0;
+          let failed = 0;
           for (const proof of stash.proofs) {
             if (existingSecrets.has(proof.secret)) continue;
             try {
               await addProof(mint.contextId, proof);
               recovered++;
             } catch (err) {
+              failed++;
               console.error(`[nutsd] Failed to recover proof from stash:`, err);
               // Continue with remaining proofs — partial recovery is better than none
             }
           }
 
-          // Delete the stash (all proofs accounted for)
-          try {
-            await record.delete();
-          } catch {
-            console.warn('[nutsd] Failed to delete recovered stash');
-          }
-
-          if (recovered > 0) {
-            console.log(`[nutsd] Recovered ${recovered} proof(s) from stash for ${stash.mintUrl}`);
+          // CRITICAL: Only delete the stash if ALL proofs are accounted for.
+          // If any addProof calls failed, the stash MUST be preserved so the
+          // next startup attempt can retry those proofs. Deleting the stash
+          // after a partial failure would permanently lose the failed proofs.
+          if (failed > 0) {
+            console.warn(
+              `[nutsd] Stash recovery incomplete: ${recovered} recovered, ${failed} failed. ` +
+              'Stash preserved for next startup.',
+            );
+          } else {
+            try {
+              await record.delete();
+            } catch {
+              console.warn('[nutsd] Failed to delete recovered stash');
+            }
+            if (recovered > 0) {
+              console.log(`[nutsd] Recovered ${recovered} proof(s) from stash for ${stash.mintUrl}`);
+            }
           }
         } catch (err) {
           console.error('[nutsd] Failed to process stash record:', err);
