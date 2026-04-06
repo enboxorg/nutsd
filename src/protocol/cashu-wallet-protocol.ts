@@ -148,6 +148,27 @@ export type TransactionData = {
   createdAt: string;
 };
 
+/**
+ * P2PK key pair for NUT-11 Pay-to-Pubkey locking.
+ *
+ * Stores a secp256k1 keypair used to lock/unlock ecash tokens. The private
+ * key is encrypted at the DWN layer (`encryptionRequired: true`). The public
+ * key is shared with senders (out-of-band or via P2P transfer protocol).
+ *
+ * Each wallet has exactly one active P2PK key. When a token is locked to
+ * this key, only the holder of the private key can redeem it at the mint.
+ * This is the security gate for P2P DWN transfers — without P2PK, a DWN
+ * server operator could front-run and steal bearer tokens.
+ */
+export type P2pkKeyData = {
+  /** secp256k1 public key in compressed hex (02... or 03...). */
+  publicKey: string;
+  /** secp256k1 private key in hex. ENCRYPTED at the DWN layer. */
+  privateKey: string;
+  /** ISO timestamp when the key was generated. */
+  createdAt: string;
+};
+
 /** Wallet-level preferences (singleton). */
 export type PreferenceData = {
   /** Default mint URL. */
@@ -167,6 +188,7 @@ export type CashuWalletSchemaMap = {
   keyset: KeysetData;
   proof: ProofData;
   transaction: TransactionData;
+  p2pkKey: P2pkKeyData;
   preference: PreferenceData;
 };
 
@@ -197,6 +219,11 @@ export const CashuWalletDefinition = {
       dataFormats         : ['application/json'],
       encryptionRequired  : true,
     },
+    p2pkKey: {
+      schema              : 'https://enbox.id/schemas/cashu-wallet/p2pk-key',
+      dataFormats         : ['application/json'],
+      encryptionRequired  : true,
+    },
     preference: {
       schema      : 'https://enbox.id/schemas/cashu-wallet/preference',
       dataFormats : ['application/json'],
@@ -219,6 +246,10 @@ export const CashuWalletDefinition = {
     // Transaction is encrypted → NO tags.
     // Query all, sort/filter client-side after decryption.
     transaction: {},
+    // P2PK key is encrypted (contains private key). Singleton per wallet.
+    p2pkKey: {
+      $recordLimit: { max: 1, strategy: 'reject' },
+    },
     preference: {
       $recordLimit: { max: 1, strategy: 'reject' },
     },

@@ -32,6 +32,7 @@ import {
   type KeysetData,
   type TransactionData,
   type PreferenceData,
+  type P2pkKeyData,
   type ProofState,
 } from '@/protocol/cashu-wallet-protocol';
 import {
@@ -39,6 +40,7 @@ import {
   getKeysetInfos,
   type KeysetInfo,
 } from '@/cashu/wallet-ops';
+import { generateP2pkKeyPair, type P2pkKeyPair } from '@/cashu/p2pk';
 
 // ---------------------------------------------------------------------------
 // Domain types — flattened from TypedRecord for the UI layer
@@ -122,6 +124,7 @@ export function useWallet() {
   const [keysets, setKeysets] = useState<Keyset[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [preferences, setPreferences] = useState<WalletPreferences>({});
+  const [p2pkKey, setP2pkKey] = useState<P2pkKeyPair | null>(null);
   const [loading, setLoading] = useState(false);
   const [reconciling, setReconciling] = useState(false);
 
@@ -147,6 +150,7 @@ export function useWallet() {
       setKeysets([]);
       setTransactions([]);
       setPreferences({});
+      setP2pkKey(null);
       proofRecordCache.current.clear();
     }
   }, [enbox, isConnected]);
@@ -288,13 +292,38 @@ export function useWallet() {
     }
   }, [repo]);
 
+  const loadP2pkKey = useCallback(async () => {
+    if (!repo) return;
+    try {
+      const record = await repo.p2pkKey.get();
+      if (record) {
+        const data: P2pkKeyData = await record.data.json();
+        setP2pkKey({ publicKey: data.publicKey, privateKey: data.privateKey });
+        return;
+      }
+      // Generate new key and store it
+      const newKey = generateP2pkKeyPair();
+      await repo.p2pkKey.set({
+        data: {
+          publicKey  : newKey.publicKey,
+          privateKey : newKey.privateKey,
+          createdAt  : new Date().toISOString(),
+        } satisfies P2pkKeyData,
+      });
+      setP2pkKey(newKey);
+      console.log('[nutsd] Generated new P2PK key:', newKey.publicKey.slice(0, 12) + '...');
+    } catch (err) {
+      console.error('Failed to load/create P2PK key:', err);
+    }
+  }, [repo]);
+
   // --- Initial load ---
   useEffect(() => {
     if (!repo) return;
     setLoading(true);
-    Promise.all([refreshMints(), refreshTransactions(), refreshPreferences()])
+    Promise.all([refreshMints(), refreshTransactions(), refreshPreferences(), loadP2pkKey()])
       .finally(() => setLoading(false));
-  }, [repo, refreshMints, refreshTransactions, refreshPreferences]);
+  }, [repo, refreshMints, refreshTransactions, refreshPreferences, loadP2pkKey]);
 
   // Proofs and keysets depend on mints being loaded
   useEffect(() => {
@@ -868,6 +897,7 @@ export function useWallet() {
     keysets,
     transactions,
     preferences,
+    p2pkKey,
     loading,
     reconciling,
     totalBalance,
