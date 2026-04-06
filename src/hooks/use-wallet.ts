@@ -924,15 +924,20 @@ export function useWallet() {
    * @param mintUrl - Mint URL (for stash metadata)
    * @param unit - Currency unit
    * @param proofDataList - Full proof set from the mint swap
+   * @returns `true` if all proofs were durably persisted and the stash was
+   *   cleaned up. `false` if persistence was partial and the stash was
+   *   preserved for later recovery. Callers MUST NOT treat `false` as
+   *   "operation completed" — the proofs are safe (in the stash) but not
+   *   yet individually queryable.
    */
   const safeStoreReceivedProofs = useCallback(async (
     mintContextId: string,
     mintUrl: string,
     unit: string,
     proofDataList: ProofData[],
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     if (!repo) throw new Error('Repository not available');
-    if (proofDataList.length === 0) return;
+    if (proofDataList.length === 0) return true;
 
     // STEP 1: Write stash record — single atomic DWN write.
     // This is the crash checkpoint. If this succeeds, we can always recover.
@@ -963,7 +968,7 @@ export function useWallet() {
         `[nutsd] Partial proof write failure (${proofDataList.length} proofs, stash preserved):`,
         err,
       );
-      return; // Do NOT delete the stash
+      return false; // Stash preserved, but proofs NOT fully persisted
     }
 
     // STEP 3: All proofs written — delete the stash.
@@ -973,6 +978,7 @@ export function useWallet() {
       // Stash deletion failed — harmless. recoverProofStashes() cleans it up.
       console.warn('[nutsd] Failed to delete proof stash (will clean up on next startup)');
     }
+    return true; // All proofs durably persisted
   }, [repo, addProof]);
 
   /**
@@ -1088,14 +1094,23 @@ export function useWallet() {
               continue;
             }
 
-            await safeStoreReceivedProofs(
+            const fullyPersisted = await safeStoreReceivedProofs(
               mint.contextId, mint.url, mint.unit,
               newProofs.map(p => ({
                 amount: p.amount, id: p.id, secret: p.secret, C: p.C, state: 'unspent' as const,
               })),
             );
-            await record.update({ data: { ...tx, status: 'completed', memo: `Swap resumed: ${newProofs.length} proofs minted` } });
-            console.log(`[nutsd] Pending swap completed: ${newProofs.length} proofs`);
+
+            if (fullyPersisted) {
+              // All proofs durably written — safe to mark completed.
+              await record.update({ data: { ...tx, status: 'completed', memo: `Swap resumed: ${newProofs.length} proofs minted` } });
+              console.log(`[nutsd] Pending swap completed: ${newProofs.length} proofs`);
+            } else {
+              // Proofs are in the stash but not fully persisted as individual records.
+              // Do NOT mark completed — stash recovery on next startup will finish
+              // the proof writes, and this resume will run again to mark completed.
+              console.warn(`[nutsd] Swap proofs stashed but not fully persisted, keeping pending`);
+            }
           } else {
             // resumePendingSwap returned empty proofs — quote was ISSUED (already
             // minted by another session). Mark completed so it doesn't retry forever.
