@@ -20,4 +20,8 @@ export const brand = {
     : 'Decentralized Cashu ecash wallet powered by Enbox',
   /** localStorage key prefix to avoid collision between variants. */
   storagePrefix: theme === 'dnuts' ? 'dnuts' : 'nutsd',
+  /** Preferred hosted Enbox wallet URL for delegated connect flows. */
+  preferredWalletUrl: theme === 'dnuts'
+    ? 'https://blue-enbox-wallet.pages.dev/'
+    : 'https://enbox-wallet.pages.dev/',
 } as const;

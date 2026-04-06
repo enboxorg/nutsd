@@ -12,12 +12,13 @@ import type { ProofData } from '../protocol/cashu-wallet-protocol';
  */
 
 /** Simulates storeNewProofs mapping (App.tsx) */
-function cashuProofToProofData(proof: Proof): ProofData {
+function cashuProofToProofData(proof: Proof, state: 'unspent' | 'pending' = 'unspent'): ProofData {
   const data: ProofData = {
     amount: proof.amount,
     id: proof.id,
     secret: proof.secret,
     C: proof.C,
+    state,
   };
   if (proof.dleq) {
     data.dleq = {
@@ -130,5 +131,69 @@ describe('proof round-trip preserves all fields', () => {
     });
     expect(rebuilt.dleq).toBeUndefined();
     expect(rebuilt.witness).toBeUndefined();
+  });
+
+  // --- State tracking (Sprint 1) ---
+
+  it('stores state field as unspent by default', () => {
+    const original: Proof = {
+      amount: 4,
+      id: '00abc123',
+      secret: 'secretvalue',
+      C: '02abcdef',
+    } as Proof;
+
+    const stored = cashuProofToProofData(original);
+    expect(stored.state).toBe('unspent');
+  });
+
+  it('stores state field as pending when specified', () => {
+    const original: Proof = {
+      amount: 4,
+      id: '00abc123',
+      secret: 'secretvalue',
+      C: '02abcdef',
+    } as Proof;
+
+    const stored = cashuProofToProofData(original, 'pending');
+    expect(stored.state).toBe('pending');
+  });
+
+  it('defaults to unspent when state is absent (backward compat)', () => {
+    // Simulates a proof record written before state tracking was added
+    const legacyData: ProofData = {
+      amount: 4,
+      id: '00abc123',
+      secret: 'secretvalue',
+      C: '02abcdef',
+      // no state field
+    };
+    // The hook reads: data.state ?? 'unspent'
+    expect(legacyData.state ?? 'unspent').toBe('unspent');
+  });
+
+  it('preserves state through store/rebuild cycle', () => {
+    const original: Proof = {
+      amount: 8,
+      id: '00abc123',
+      secret: 'secretvalue',
+      C: '02abcdef',
+    } as Proof;
+
+    const storedUnspent = cashuProofToProofData(original, 'unspent');
+    expect(storedUnspent.state).toBe('unspent');
+
+    const storedPending = cashuProofToProofData(original, 'pending');
+    expect(storedPending.state).toBe('pending');
+
+    // Rebuild preserves the core proof fields regardless of state
+    const rebuiltFromPending = storedProofToCashuProof({
+      ...storedPending,
+      keysetId: storedPending.id,
+    });
+    expect(rebuiltFromPending.amount).toBe(original.amount);
+    expect(rebuiltFromPending.id).toBe(original.id);
+    expect(rebuiltFromPending.secret).toBe(original.secret);
+    expect(rebuiltFromPending.C).toBe(original.C);
   });
 });

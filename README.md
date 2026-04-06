@@ -25,7 +25,7 @@ nutsd takes a different approach:
 
 ### How it works
 
-1. **Connect** with a DID — either via an Enbox wallet or by creating a local identity
+1. **Connect** with a DID — either by connecting an Enbox wallet (delegated wallet-connect) or by creating a local identity
 2. **DWN protocols** define the schema for your wallet data (mints, proofs, transactions) as typed records in your personal data store — proofs, keysets, and transactions are encrypted at the DWN layer
 3. **Cashu operations** (mint, melt, send, receive) are handled by [cashu-ts](https://github.com/cashubtc/cashu-ts), with proof lifecycle managed through DWN records
 4. **Real-time sync** — subscribe to protocol-level changes so multi-device state stays consistent
