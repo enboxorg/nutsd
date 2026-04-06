@@ -16,6 +16,7 @@ import { MintDetail } from '@/components/mint/mint-detail';
 import { DepositDialog } from '@/components/wallet/deposit-dialog';
 import { WithdrawDialog } from '@/components/wallet/withdraw-dialog';
 import { SendDialog } from '@/components/wallet/send-dialog';
+import { SendToDIDDialog } from '@/components/wallet/send-to-did-dialog';
 import { ReceiveDialog } from '@/components/wallet/receive-dialog';
 import { RecoveryPhraseDialog } from '@/components/connect/recovery-phrase-dialog';
 import { LnurlWithdrawDialog } from '@/components/wallet/lnurl-withdraw-dialog';
@@ -40,6 +41,9 @@ import {
   MoonIcon,
   SunIcon,
   AlertTriangleIcon,
+  KeyIcon,
+  CopyIcon,
+  UsersIcon,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -59,6 +63,7 @@ function WalletHome() {
     mintFeePpk,
     keysetFeeMap,
     pendingProofCount,
+    p2pkKey,
     loading,
     reconciling,
     addMint,
@@ -84,6 +89,7 @@ function WalletHome() {
   const [showScanner, setShowScanner] = useState(false);
   const [showLnurlPay, setShowLnurlPay] = useState<{ target: string; type: 'lightning-address' | 'lnurl' } | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [showSendToDid, setShowSendToDid] = useState(false);
 
   const hasMints = mints.length > 0;
 
@@ -339,6 +345,27 @@ function WalletHome() {
               </div>
             )}
 
+            {/* P2PK public key display */}
+            {p2pkKey && (
+              <div className="flex items-center gap-2 p-3 rounded-lg bg-card border border-border text-xs">
+                <KeyIcon className="h-3.5 w-3.5 text-primary shrink-0" />
+                <div className="min-w-0">
+                  <span className="text-muted-foreground">Your P2PK key: </span>
+                  <code className="font-mono text-foreground truncate">{p2pkKey.publicKey.slice(0, 8)}...{p2pkKey.publicKey.slice(-6)}</code>
+                </div>
+                <button
+                  onClick={async () => {
+                    await navigator.clipboard.writeText(p2pkKey.publicKey);
+                    toastSuccess('P2PK key copied');
+                  }}
+                  className="p-1 rounded hover:bg-muted text-muted-foreground shrink-0"
+                  title="Copy P2PK public key"
+                >
+                  <CopyIcon className="h-3 w-3" />
+                </button>
+              </div>
+            )}
+
             <BalanceCard
               totalBalance={totalBalance}
               unit="sat"
@@ -362,6 +389,16 @@ function WalletHome() {
               onScanQr={() => setShowScanner(true)}
               disabled={!hasMints}
             />
+
+            {hasMints && p2pkKey && (
+              <button
+                onClick={() => setShowSendToDid(true)}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-primary/30 text-xs font-medium text-primary hover:bg-primary/5 transition-colors"
+              >
+                <UsersIcon className="h-3.5 w-3.5" />
+                Send to DID (P2PK)
+              </button>
+            )}
 
             <MintListCard
               mints={mints}
@@ -417,6 +454,19 @@ function WalletHome() {
           keysetFeeMap={keysetFeeMap}
           mintFeePpk={mintFeePpk}
           onClose={() => setShowSend(false)}
+          onNewProofs={storeNewProofs}
+          onOldProofsSpent={removeProofsByIds}
+          onMarkPending={markProofsPending}
+          onTransactionCreated={recordTransaction}
+        />
+      )}
+      {showSendToDid && hasMints && p2pkKey && did && (
+        <SendToDIDDialog
+          mints={mints}
+          mintBalances={mintBalances}
+          getUnspentProofs={getUnspentProofsForMint}
+          senderDid={did}
+          onClose={() => setShowSendToDid(false)}
           onNewProofs={storeNewProofs}
           onOldProofsSpent={removeProofsByIds}
           onMarkPending={markProofsPending}

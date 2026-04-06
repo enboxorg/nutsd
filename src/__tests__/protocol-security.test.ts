@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { CashuWalletDefinition } from '../protocol/cashu-wallet-protocol';
-import { assertTransferProtocolDisabled } from '../protocol/cashu-transfer-protocol';
+import { assertP2PKLocked } from '../protocol/cashu-transfer-protocol';
+import { generateP2pkKeyPair } from '../cashu/p2pk';
 
 describe('CashuWalletDefinition security', () => {
   // --- Encryption ---
@@ -92,16 +93,26 @@ describe('ProofData state field', () => {
 });
 
 describe('CashuTransferProtocol safety', () => {
-  it('assertTransferProtocolDisabled throws', () => {
-    expect(() => assertTransferProtocolDisabled()).toThrow('cashu-transfer protocol is disabled');
+  it('assertP2PKLocked rejects transfer without P2PK key', () => {
+    expect(() => assertP2PKLocked({
+      token           : 'cashuBsometoken',
+      amount          : 100,
+      unit            : 'sat',
+      mintUrl         : 'https://testnut.cashu.space',
+      senderDid       : 'did:dht:sender',
+      recipientPubkey : '',
+    })).toThrow('missing recipientPubkey');
   });
 
-  it('error message mentions NUT-11', () => {
-    try {
-      assertTransferProtocolDisabled();
-    } catch (e) {
-      expect((e as Error).message).toContain('NUT-11');
-      expect((e as Error).message).toContain('Pay-to-Pubkey');
-    }
+  it('assertP2PKLocked accepts transfer with valid P2PK key', () => {
+    const kp = generateP2pkKeyPair();
+    expect(() => assertP2PKLocked({
+      token           : 'cashuBsometoken',
+      amount          : 100,
+      unit            : 'sat',
+      mintUrl         : 'https://testnut.cashu.space',
+      senderDid       : 'did:dht:sender',
+      recipientPubkey : kp.publicKey,
+    })).not.toThrow();
   });
 });
