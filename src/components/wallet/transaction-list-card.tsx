@@ -11,6 +11,7 @@ import {
   CircleCheckIcon,
   ClockIcon,
   Loader2Icon,
+  RotateCcwIcon,
 } from 'lucide-react';
 import { formatAmount, formatDate, truncateMintUrl, toastSuccess, toastError } from '@/lib/utils';
 import type { Transaction } from '@/hooks/use-wallet';
@@ -19,6 +20,7 @@ interface TransactionListCardProps {
   transactions: Transaction[];
   onViewAll?: () => void;
   onCheckTokenSpent?: (tx: Transaction) => Promise<boolean | null>;
+  onReclaimToken?: (tx: Transaction) => Promise<void>;
 }
 
 const TX_ICONS: Record<string, React.FC<{ className?: string }>> = {
@@ -54,12 +56,15 @@ const TX_COLORS: Record<string, string> = {
 function TransactionRow({
   tx,
   onCheckSpent,
+  onReclaimToken,
 }: {
   tx: Transaction;
   onCheckSpent?: (tx: Transaction) => Promise<boolean | null>;
+  onReclaimToken?: (tx: Transaction) => Promise<void>;
 }) {
   const [copied, setCopied] = useState(false);
-  const [spentState, setSpentState] = useState<'unknown' | 'checking' | 'pending' | 'spent'>('unknown');
+  const [spentState, setSpentState] = useState<'unknown' | 'checking' | 'pending' | 'spent' | 'reclaimed'>('unknown');
+  const [reclaiming, setReclaiming] = useState(false);
 
   const Icon = TX_ICONS[tx.type] ?? RefreshCwIcon;
   const label = TX_LABELS[tx.type] ?? tx.type;
@@ -97,6 +102,20 @@ function TransactionRow({
     }
   };
 
+  const handleReclaim = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!onReclaimToken || reclaiming) return;
+    setReclaiming(true);
+    try {
+      await onReclaimToken(tx);
+      setSpentState('reclaimed');
+    } catch {
+      toastError('Reclaim failed', new Error('Could not reclaim token. It may have already been claimed.'));
+    } finally {
+      setReclaiming(false);
+    }
+  };
+
   return (
     <div className="flex items-center justify-between px-4 py-3 group">
       <div className="flex items-center gap-3 min-w-0">
@@ -119,6 +138,12 @@ function TransactionRow({
                 pending
               </span>
             )}
+            {hasCopyableToken && spentState === 'reclaimed' && (
+              <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-[var(--color-info)]/10 text-[var(--color-info)] text-[10px] font-medium">
+                <RotateCcwIcon className="h-2.5 w-2.5" />
+                reclaimed
+              </span>
+            )}
           </div>
           <div className="text-xs text-muted-foreground">
             {truncateMintUrl(tx.mintUrl)} &middot; {formatDate(tx.createdAt)}
@@ -130,8 +155,22 @@ function TransactionRow({
         {/* Action buttons for sent tokens */}
         {hasCopyableToken && (
           <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            {/* Reclaim unclaimed token */}
+            {onReclaimToken && spentState === 'pending' && (
+              <button
+                onClick={handleReclaim}
+                disabled={reclaiming}
+                className="p-1 rounded hover:bg-muted text-[var(--color-info)] hover:text-foreground transition-colors disabled:opacity-50"
+                title="Reclaim unclaimed token"
+              >
+                {reclaiming
+                  ? <Loader2Icon className="h-3 w-3 animate-spin" />
+                  : <RotateCcwIcon className="h-3 w-3" />
+                }
+              </button>
+            )}
             {/* Check spent status */}
-            {onCheckSpent && spentState !== 'spent' && (
+            {onCheckSpent && spentState !== 'spent' && spentState !== 'reclaimed' && (
               <button
                 onClick={handleCheckSpent}
                 className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
@@ -168,6 +207,7 @@ export const TransactionListCard: React.FC<TransactionListCardProps> = ({
   transactions,
   onViewAll,
   onCheckTokenSpent,
+  onReclaimToken,
 }) => {
   const recent = transactions.slice(0, 10);
 
@@ -198,6 +238,7 @@ export const TransactionListCard: React.FC<TransactionListCardProps> = ({
               key={tx.id}
               tx={tx}
               onCheckSpent={onCheckTokenSpent}
+              onReclaimToken={onReclaimToken}
             />
           ))}
         </div>

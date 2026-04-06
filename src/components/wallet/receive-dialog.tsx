@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Loader2Icon, XIcon, DownloadIcon, ZapIcon, CopyIcon, CheckIcon, ChevronDownIcon } from 'lucide-react';
 import { toastError, toastSuccess, truncateMintUrl } from '@/lib/utils';
 import { receiveToken, createMintQuote, checkMintQuote, mintTokens } from '@/cashu/wallet-ops';
+import { startMintQuotePolling } from '@/lib/mint-quote-poller';
 import { extractMintUrl, isCashuToken } from '@/cashu/token-utils';
 import { QRCodeDisplay } from '@/components/qr-code';
 import type { Mint } from '@/hooks/use-wallet';
@@ -184,7 +185,7 @@ const LightningTab: React.FC<{
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval>>();
+  const stopPollingRef = useRef<(() => void) | undefined>();
   const mountedRef = useRef(true);
   const busyRef = useRef(false);
 
@@ -192,7 +193,7 @@ const LightningTab: React.FC<{
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      if (pollRef.current) clearInterval(pollRef.current);
+      stopPollingRef.current?.();
     };
   }, []);
 
@@ -213,39 +214,54 @@ const LightningTab: React.FC<{
       const mintUnit = selectedMint.unit;
       const mintCtx = selectedMint.contextId;
       const quoteId = quote.quote;
+      const quoteExpiry = quote.expiry ?? null;
 
-      pollRef.current = setInterval(async () => {
-        try {
-          const status = await checkMintQuote(mintUrl, quoteId, mintUnit);
-          if (!mountedRef.current) { clearInterval(pollRef.current); return; }
-          if (status.state === 'PAID') {
-            clearInterval(pollRef.current);
-            setLnStep('waiting');
-            try {
-              const proofs = await mintTokens(mintUrl, amountNum, quoteId, mintUnit);
-              if (!mountedRef.current) return;
-              await onProofsReceived(mintCtx, proofs, mintUrl);
-              await onTransactionCreated({
-                type: 'mint',
-                amount: amountNum,
-                unit: mintUnit,
-                mintUrl,
-                status: 'completed',
-                memo: `Lightning deposit via ${truncateMintUrl(mintUrl)}`,
-              });
-              if (mountedRef.current) {
-                setLnStep('done');
-                toastSuccess('Received!', `+${amountNum} ${mintUnit}`);
-              }
-            } catch (err) {
-              if (mountedRef.current) {
-                setErrorMsg(err instanceof Error ? err.message : 'Failed to mint tokens');
-                setLnStep('error');
-              }
+      stopPollingRef.current = startMintQuotePolling({
+        check: () => checkMintQuote(mintUrl, quoteId, mintUnit).then(s => ({
+          state  : s.state as 'UNPAID' | 'PAID' | 'ISSUED',
+          expiry : s.expiry ?? null,
+        })),
+        onPaid: async () => {
+          if (!mountedRef.current) return;
+          setLnStep('waiting');
+          try {
+            const proofs = await mintTokens(mintUrl, amountNum, quoteId, mintUnit);
+            if (!mountedRef.current) return;
+            await onProofsReceived(mintCtx, proofs, mintUrl);
+            await onTransactionCreated({
+              type   : 'mint',
+              amount : amountNum,
+              unit   : mintUnit,
+              mintUrl,
+              status : 'completed',
+              memo   : `Lightning deposit via ${truncateMintUrl(mintUrl)}`,
+            });
+            if (mountedRef.current) {
+              setLnStep('done');
+              toastSuccess('Received!', `+${amountNum} ${mintUnit}`);
+            }
+          } catch (err) {
+            if (mountedRef.current) {
+              setErrorMsg(err instanceof Error ? err.message : 'Failed to mint tokens');
+              setLnStep('error');
             }
           }
-        } catch { /* keep polling */ }
-      }, 3000);
+        },
+        onExpired: () => {
+          if (mountedRef.current) {
+            setErrorMsg('The invoice has expired. Please create a new one.');
+            setLnStep('error');
+          }
+        },
+        onIssued: () => {
+          if (mountedRef.current) {
+            setErrorMsg('These tokens were already minted (possibly in another session).');
+            setLnStep('error');
+          }
+        },
+        isActive : () => mountedRef.current,
+        expiry   : quoteExpiry,
+      });
     } catch (err) {
       toastError('Failed to create invoice', err);
     } finally {
