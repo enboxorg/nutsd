@@ -988,8 +988,9 @@ export function useWallet() {
    * that is tested in proof-stash-recovery.test.ts), wiring DWN access as
    * injected deps. This ensures the tested code IS the production code.
    */
-  const recoverProofStashes = useCallback(async () => {
-    if (!repo) return;
+  /** @returns true if any proofs were recovered (caller should re-load proofs). */
+  const recoverProofStashes = useCallback(async (): Promise<boolean> => {
+    if (!repo) return false;
 
     const deps: RecoveryDeps = {
       getStashes: async () => {
@@ -1041,6 +1042,7 @@ export function useWallet() {
         `${result.stashesCompleted}/${result.stashesFound} stashes completed`,
       );
     }
+    return result.proofsRecovered > 0;
   }, [repo, mints, addMint, addProof]);
 
   // Wire startup recovery ref — called by the mints-dependent effect above
@@ -1048,12 +1050,15 @@ export function useWallet() {
   // depending on React state (setProofs is async and may not have committed).
   useEffect(() => {
     startupRecoveryRef.current = async (freshProofs: StoredProof[]) => {
-      await recoverProofStashes();
-      // Pass freshly loaded proofs directly — do NOT read from React state,
-      // which may not have committed the setProofs() from refreshProofs() yet.
-      await reconcilePendingProofs(freshProofs);
+      const stashResult = await recoverProofStashes();
+      // If stash recovery wrote new proofs, re-load so reconciliation sees them.
+      // Otherwise use the pre-loaded snapshot (avoids an extra DWN round-trip).
+      const proofsForReconciliation = stashResult
+        ? await refreshProofs()
+        : freshProofs;
+      await reconcilePendingProofs(proofsForReconciliation);
     };
-  }, [recoverProofStashes, reconcilePendingProofs]);
+  }, [recoverProofStashes, refreshProofs, reconcilePendingProofs]);
 
   // =========================================================================
   // Transaction CRUD
