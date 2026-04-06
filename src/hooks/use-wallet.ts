@@ -45,6 +45,7 @@ import {
 } from '@/cashu/wallet-ops';
 import { generateP2pkKeyPair, receiveP2pkLocked, type P2pkKeyPair } from '@/cashu/p2pk';
 import { recoverStashes, type RecoveryDeps } from '@/cashu/proof-stash-recovery';
+import { resumePendingSwap, type PendingSwapState } from '@/cashu/cross-mint-swap';
 import { acquireWalletLock } from '@/lib/wallet-mutex';
 
 // ---------------------------------------------------------------------------
@@ -923,15 +924,20 @@ export function useWallet() {
    * @param mintUrl - Mint URL (for stash metadata)
    * @param unit - Currency unit
    * @param proofDataList - Full proof set from the mint swap
+   * @returns `true` if all proofs were durably persisted and the stash was
+   *   cleaned up. `false` if persistence was partial and the stash was
+   *   preserved for later recovery. Callers MUST NOT treat `false` as
+   *   "operation completed" — the proofs are safe (in the stash) but not
+   *   yet individually queryable.
    */
   const safeStoreReceivedProofs = useCallback(async (
     mintContextId: string,
     mintUrl: string,
     unit: string,
     proofDataList: ProofData[],
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     if (!repo) throw new Error('Repository not available');
-    if (proofDataList.length === 0) return;
+    if (proofDataList.length === 0) return true;
 
     // STEP 1: Write stash record — single atomic DWN write.
     // This is the crash checkpoint. If this succeeds, we can always recover.
@@ -962,7 +968,7 @@ export function useWallet() {
         `[nutsd] Partial proof write failure (${proofDataList.length} proofs, stash preserved):`,
         err,
       );
-      return; // Do NOT delete the stash
+      return false; // Stash preserved, but proofs NOT fully persisted
     }
 
     // STEP 3: All proofs written — delete the stash.
@@ -972,6 +978,7 @@ export function useWallet() {
       // Stash deletion failed — harmless. recoverProofStashes() cleans it up.
       console.warn('[nutsd] Failed to delete proof stash (will clean up on next startup)');
     }
+    return true; // All proofs durably persisted
   }, [repo, addProof]);
 
   /**
@@ -1045,20 +1052,109 @@ export function useWallet() {
     return result.proofsRecovered > 0;
   }, [repo, mints, addMint, addProof]);
 
+  /**
+   * Resume any pending cross-mint swaps (second leg: mint at trusted mint).
+   * Scans transactions for status='pending' + type='swap' with PendingSwapState in memo.
+   */
+  const resumePendingSwaps = useCallback(async () => {
+    if (!repo) return;
+    try {
+      const { records } = await repo.transaction.query();
+      if (!records) return;
+
+      for (const record of records) {
+        try {
+          const tx: TransactionData = await record.data.json();
+          if (tx.status !== 'pending' || tx.type !== 'swap' || !tx.memo) continue;
+
+          let swapState: PendingSwapState;
+          try { swapState = JSON.parse(tx.memo); } catch { continue; }
+          if (!swapState.trustedMintQuoteId || !swapState.trustedMintUrl) continue;
+
+          console.log(`[nutsd] Resuming pending swap: quote ${swapState.trustedMintQuoteId}`);
+          const newProofs = await resumePendingSwap(swapState);
+
+          if (newProofs.length > 0) {
+            // CRITICAL: Ensure the trusted mint exists BEFORE persisting proofs.
+            // mints[] may be empty on cold start. Auto-add if needed.
+            let mint = mints.find(m => m.url === swapState.trustedMintUrl);
+            if (!mint) {
+              try {
+                const added = await addMint({ url: swapState.trustedMintUrl, unit: swapState.unit, active: true });
+                if (added) mint = added;
+              } catch {
+                // Mint unreachable — do NOT mark completed. Leave pending for next startup.
+                console.warn(`[nutsd] Swap resume: trusted mint ${swapState.trustedMintUrl} unreachable, preserving pending state`);
+                continue;
+              }
+            }
+            if (!mint) {
+              // Still no mint — do NOT mark completed. Proofs would be lost.
+              console.warn(`[nutsd] Swap resume: cannot resolve trusted mint, preserving pending state`);
+              continue;
+            }
+
+            const fullyPersisted = await safeStoreReceivedProofs(
+              mint.contextId, mint.url, mint.unit,
+              newProofs.map(p => ({
+                amount: p.amount, id: p.id, secret: p.secret, C: p.C, state: 'unspent' as const,
+              })),
+            );
+
+            if (fullyPersisted) {
+              // All proofs durably written — safe to mark completed.
+              await record.update({ data: { ...tx, status: 'completed', memo: `Swap resumed: ${newProofs.length} proofs minted` } });
+              console.log(`[nutsd] Pending swap completed: ${newProofs.length} proofs`);
+            } else {
+              // Proofs are in the stash but not fully persisted as individual records.
+              // Do NOT mark completed — stash recovery on next startup will finish
+              // the proof writes, and this resume will run again to mark completed.
+              console.warn(`[nutsd] Swap proofs stashed but not fully persisted, keeping pending`);
+            }
+          } else {
+            // resumePendingSwap returned empty proofs — quote was ISSUED (already
+            // minted by a previous session/attempt). Two possibilities:
+            //
+            // 1. The previous attempt wrote a stash → stash recovery (which ran
+            //    earlier in the startup sequence) already recovered the proofs.
+            //    Proofs are in the local store. Marking completed is correct.
+            //
+            // 2. The previous attempt crashed before writing the stash (the
+            //    documented ~ms pre-stash window). Proofs are unrecoverable —
+            //    the mint won't re-issue, and no stash exists. Keeping this
+            //    pending would just hit ISSUED on every startup forever with
+            //    no recovery path. Marking completed is the honest outcome.
+            //
+            // In both cases, marking completed is correct. The stash is the
+            // safety net, and it already ran before we got here.
+            await record.update({ data: { ...tx, status: 'completed', memo: 'Swap completed (ISSUED — proofs recovered via stash or in pre-stash loss window)' } });
+            console.log(`[nutsd] Pending swap ISSUED: ${swapState.trustedMintQuoteId} — proofs should have been recovered by stash recovery`);
+          }
+        } catch (err) {
+          // Leave for next startup — the quote may still settle
+          console.warn('[nutsd] Pending swap resume failed (will retry):', err);
+        }
+      }
+    } catch (err) {
+      console.error('[nutsd] Pending swap scan failed:', err);
+    }
+  }, [repo, mints, safeStoreReceivedProofs]);
+
   // Wire startup recovery ref — called by the mints-dependent effect above
   // AFTER proofs are loaded. The loaded proofs are passed directly to avoid
   // depending on React state (setProofs is async and may not have committed).
   useEffect(() => {
     startupRecoveryRef.current = async (freshProofs: StoredProof[]) => {
       const stashResult = await recoverProofStashes();
-      // If stash recovery wrote new proofs, re-load so reconciliation sees them.
-      // Otherwise use the pre-loaded snapshot (avoids an extra DWN round-trip).
+      // Resume any pending cross-mint swaps (second leg).
+      await resumePendingSwaps();
+      // If stash recovery or swap resume wrote new proofs, re-load.
       const proofsForReconciliation = stashResult
         ? await refreshProofs()
         : freshProofs;
       await reconcilePendingProofs(proofsForReconciliation);
     };
-  }, [recoverProofStashes, refreshProofs, reconcilePendingProofs]);
+  }, [recoverProofStashes, resumePendingSwaps, refreshProofs, reconcilePendingProofs]);
 
   // =========================================================================
   // Transaction CRUD

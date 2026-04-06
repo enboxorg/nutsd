@@ -2,6 +2,12 @@ import { describe, it, expect } from 'vitest';
 import { detectInput } from '../lib/input-detect';
 
 describe('detectInput', () => {
+  // --- NUT-18 Payment requests ---
+  it('detects NUT-18 payment request (creqA)', () => {
+    const result = detectInput('creqAeyJhIjoxMDB9');
+    expect(result.type).toBe('payment-request');
+  });
+
   // --- Cashu tokens ---
   it('detects V3 cashu token (cashuA)', () => {
     const result = detectInput('cashuAeyJ0b2tlbiI6W10sInVuaXQiOiJzYXQifQ==');

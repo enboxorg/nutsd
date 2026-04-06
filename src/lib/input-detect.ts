@@ -5,6 +5,7 @@
  * that the UI can route to the appropriate dialog/flow.
  *
  * Detection order (first match wins):
+ * 0. NUT-18 Payment request (creqA / creqB prefix)
  * 1. Cashu token (cashuA / cashuB prefix)
  * 2. Lightning invoice (lnbc / lntb / lnbs prefix)
  * 3. LNURL (lnurl1 bech32 prefix)
@@ -15,6 +16,7 @@
  */
 
 export type DetectedInput =
+  | { type: 'payment-request';  value: string }
   | { type: 'cashu-token';       value: string }
   | { type: 'lightning-invoice'; value: string }
   | { type: 'lnurl';            value: string }
@@ -33,6 +35,11 @@ export function detectInput(raw: string): DetectedInput {
   if (!trimmed) return { type: 'unknown', value: trimmed };
 
   const lower = trimmed.toLowerCase();
+
+  // 0. NUT-18 Payment request (creqA / creqB)
+  if (lower.startsWith('creqa') || lower.startsWith('creqb')) {
+    return { type: 'payment-request', value: trimmed };
+  }
 
   // 1. Cashu token (V3: cashuA, V4: cashuB)
   if (lower.startsWith('cashua') || lower.startsWith('cashub')) {

@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { Loader2Icon, XIcon, DownloadIcon, ZapIcon, CopyIcon, CheckIcon, ChevronDownIcon } from 'lucide-react';
 import { toastError, toastSuccess, truncateMintUrl } from '@/lib/utils';
-import { receiveToken, createMintQuote, checkMintQuote, mintTokens, getMintInfo, isTokenSpendable } from '@/cashu/wallet-ops';
+import { receiveToken, createMintQuote, checkMintQuote, mintTokens, isTokenSpendable } from '@/cashu/wallet-ops';
 import { acquireWalletLock } from '@/lib/wallet-mutex';
 import { subscribeToQuote } from '@/lib/mint-ws';
-import { extractMintUrl, isCashuToken, isP2pkLockedToken } from '@/cashu/token-utils';
+import { extractMintUrl, isCashuToken, isP2pkLockedToken, parseToken } from '@/cashu/token-utils';
 import { receiveP2pkLocked } from '@/cashu/p2pk';
 import { QRCodeDisplay } from '@/components/qr-code';
 import type { Mint } from '@/hooks/use-wallet';
@@ -15,6 +15,8 @@ interface ReceiveDialogProps {
   mints: Mint[];
   /** P2PK private key for unlocking locked tokens. */
   p2pkPrivateKey?: string;
+  /** Called when the token is from an unknown mint. Parent should show trust dialog. */
+  onUnknownMint?: (mintUrl: string, amount: number, unit: string, token: string) => void;
   onClose: () => void;
   onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
@@ -25,6 +27,7 @@ type Tab = 'token' | 'lightning';
 export const ReceiveDialog: React.FC<ReceiveDialogProps> = ({
   mints,
   p2pkPrivateKey,
+  onUnknownMint,
   onClose,
   onProofsReceived,
   onTransactionCreated,
@@ -69,6 +72,7 @@ export const ReceiveDialog: React.FC<ReceiveDialogProps> = ({
           <TokenTab
             mints={mints}
             p2pkPrivateKey={p2pkPrivateKey}
+            onUnknownMint={onUnknownMint}
             onClose={onClose}
             onProofsReceived={onProofsReceived}
             onTransactionCreated={onTransactionCreated}
@@ -95,10 +99,12 @@ export const ReceiveDialog: React.FC<ReceiveDialogProps> = ({
 const TokenTab: React.FC<{
   mints: Mint[];
   p2pkPrivateKey?: string;
+  /** Called when the token is from an unknown mint. Parent should show trust dialog. */
+  onUnknownMint?: (mintUrl: string, amount: number, unit: string, token: string) => void;
   onClose: () => void;
   onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
-}> = ({ mints, p2pkPrivateKey, onClose, onProofsReceived, onTransactionCreated }) => {
+}> = ({ mints, p2pkPrivateKey, onUnknownMint, onClose, onProofsReceived, onTransactionCreated }) => {
   const [tokenInput, setTokenInput] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -121,25 +127,28 @@ const TokenTab: React.FC<{
       const mintUrl = extractMintUrl(trimmed);
       if (!mintUrl) throw new Error('Could not determine mint URL from token');
 
-      // ENSURE MINT EXISTS BEFORE REDEEM: verify the mint is reachable
-      // and known locally. If unknown, auto-add it now. If it fails, we
-      // abort BEFORE calling the mint — no proofs can be lost.
+      // Check if the mint is already known. If not, delegate to the
+      // trust dialog instead of silently auto-adding the mint.
       let knownMint = mints.find(m => m.url === mintUrl);
       if (!knownMint) {
-        try {
-          // Verify connectivity by fetching mint info
-          await getMintInfo(mintUrl);
-          // Auto-add (onProofsReceived -> storeNewProofsForMintUrl handles
-          // this too, but doing it here guarantees the mint record exists
-          // before we redeem, so if DWN write fails we haven't lost proofs)
-          await onProofsReceived('', [], mintUrl); // trigger auto-add via empty ctx
-          knownMint = mints.find(m => m.url === mintUrl) ?? { unit: 'sat' } as any;
-        } catch {
-          throw new Error(
-            `Mint ${mintUrl} is unreachable. Cannot safely receive tokens — ` +
-            'add the mint manually first.',
-          );
+        if (onUnknownMint) {
+          let tokenAmount = 0;
+          let tokenUnit = 'sat';
+          try {
+            // Try parsing — works reliably for V3 (cashuA), may fail for V4 (cashuB)
+            // without keyset data. That's OK — we show "unknown amount" in the dialog.
+            const parsed = parseToken(trimmed);
+            tokenAmount = parsed.amount;
+            tokenUnit = parsed.unit ?? 'sat';
+          } catch {
+            // V4 or unparseable — amount will be shown as "unknown" in trust dialog
+          }
+          onUnknownMint(mintUrl, tokenAmount, tokenUnit, trimmed);
+          releaseLock();
+          setLoading(false);
+          return;
         }
+        throw new Error(`Token is from unknown mint ${mintUrl}. Add it first in Settings.`);
       }
 
       // Pre-check: verify token is still spendable (NUT-07) before attempting redeem.

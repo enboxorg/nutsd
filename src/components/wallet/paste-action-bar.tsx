@@ -84,6 +84,11 @@ export const PasteActionBar: React.FC<PasteActionBarProps> = ({
       case 'mint-url':
         onMintUrl(detected.value);
         break;
+      case 'payment-request':
+        toastError('Payment requests', new Error(
+          'NUT-18 payment request support is coming in a future update.'
+        ));
+        break;
       case 'unknown':
         toastError('Unrecognized input', new Error(
           'Expected a Cashu token, Lightning invoice, or mint URL.',
