@@ -213,6 +213,30 @@ export async function getMintKeysets(mintUrl: string, unit = 'sat') {
   return wallet.keyChain;
 }
 
+/**
+ * Check whether a Cashu token is still spendable (all proofs UNSPENT).
+ *
+ * Used as a pre-check before attempting to receive/claim a token.
+ * If the token is already spent or pending, the receive will fail at the
+ * mint — this check avoids that confusing error.
+ *
+ * Returns true if all proofs are UNSPENT, false otherwise, null on error.
+ */
+export async function isTokenSpendable(
+  encodedToken: string,
+  mintUrl: string,
+  unit = 'sat',
+): Promise<boolean | null> {
+  try {
+    const wallet = await getWallet(mintUrl, unit);
+    const token = wallet.decodeToken(encodedToken);
+    const states = await wallet.checkProofsStates(token.proofs);
+    return states.every((s) => s.state === 'UNSPENT');
+  } catch {
+    return null; // can't determine — proceed with receive attempt
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Keyset info (NUT-02 fees)
 // ---------------------------------------------------------------------------

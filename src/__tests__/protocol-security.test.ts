@@ -92,10 +92,20 @@ describe('ProofData state field', () => {
   });
 });
 
+/** Build a fake V3 cashuA token with P2PK-locked proofs for testing. */
+function makeFakeP2pkToken(pubkey: string): string {
+  const json = { token: [{ mint: 'https://test.mint', proofs: [{
+    amount: 4, id: '00t', C: '02ab',
+    secret: JSON.stringify(['P2PK', { nonce: 'n', data: pubkey }]),
+  }] }], unit: 'sat' };
+  return 'cashuA' + btoa(JSON.stringify(json));
+}
+
 describe('CashuTransferProtocol safety', () => {
   it('assertP2PKLocked rejects transfer without P2PK key', () => {
+    const kp = generateP2pkKeyPair();
     expect(() => assertP2PKLocked({
-      token           : 'cashuBsometoken',
+      token           : makeFakeP2pkToken(kp.publicKey),
       amount          : 100,
       unit            : 'sat',
       mintUrl         : 'https://testnut.cashu.space',
@@ -104,10 +114,10 @@ describe('CashuTransferProtocol safety', () => {
     })).toThrow('missing recipientPubkey');
   });
 
-  it('assertP2PKLocked accepts transfer with valid P2PK key', () => {
+  it('assertP2PKLocked accepts transfer with valid P2PK key and locked token', () => {
     const kp = generateP2pkKeyPair();
     expect(() => assertP2PKLocked({
-      token           : 'cashuBsometoken',
+      token           : makeFakeP2pkToken(kp.publicKey),
       amount          : 100,
       unit            : 'sat',
       mintUrl         : 'https://testnut.cashu.space',

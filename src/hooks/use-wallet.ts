@@ -33,14 +33,19 @@ import {
   type TransactionData,
   type PreferenceData,
   type P2pkKeyData,
+  type ProofStashData,
   type ProofState,
 } from '@/protocol/cashu-wallet-protocol';
+import { CashuTransferProtocol } from '@/protocol/cashu-transfer-protocol';
+import type { TransferData } from '@/protocol/cashu-transfer-protocol';
 import {
   checkProofsState,
   getKeysetInfos,
   type KeysetInfo,
 } from '@/cashu/wallet-ops';
-import { generateP2pkKeyPair, type P2pkKeyPair } from '@/cashu/p2pk';
+import { generateP2pkKeyPair, receiveP2pkLocked, type P2pkKeyPair } from '@/cashu/p2pk';
+import { recoverStashes, type RecoveryDeps } from '@/cashu/proof-stash-recovery';
+import { acquireWalletLock } from '@/lib/wallet-mutex';
 
 // ---------------------------------------------------------------------------
 // Domain types — flattened from TypedRecord for the UI layer
@@ -117,6 +122,7 @@ export function useWallet() {
 
   const [repo, setRepo] = useState<Repo>(null);
   const typedRef = useRef<any>(null);
+  const transferTypedRef = useRef<any>(null);
 
   // --- Core state ---
   const [mints, setMints] = useState<Mint[]>([]);
@@ -125,11 +131,14 @@ export function useWallet() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [preferences, setPreferences] = useState<WalletPreferences>({});
   const [p2pkKey, setP2pkKey] = useState<P2pkKeyPair | null>(null);
+  const [incomingTransfers, setIncomingTransfers] = useState<TransferData[]>([]);
   const [loading, setLoading] = useState(false);
   const [reconciling, setReconciling] = useState(false);
 
   // --- DWN record cache (for in-place updates) ---
   const proofRecordCache = useRef<Map<string, any>>(new Map());
+  // --- Transfer record cache (for deletion after redemption) ---
+  const incomingTransferRecordsRef = useRef<Array<{ data: TransferData; record: any }>>([]);
 
   // Initialize repo when connected, install protocol
   useEffect(() => {
@@ -142,8 +151,17 @@ export function useWallet() {
       r.configure().catch((err: unknown) =>
         console.warn('[nutsd] Protocol configure (may already exist):', err),
       );
+
+      // Install transfer protocol (idempotent)
+      const transferTyped = enbox.using(CashuTransferProtocol);
+      transferTypedRef.current = transferTyped;
+      const transferRepo = repository(transferTyped);
+      transferRepo.configure().catch((err: unknown) =>
+        console.warn('[nutsd] Transfer protocol configure:', err),
+      );
     } else {
       typedRef.current = null;
+      transferTypedRef.current = null;
       setRepo(null);
       setMints([]);
       setProofs([]);
@@ -151,7 +169,11 @@ export function useWallet() {
       setTransactions([]);
       setPreferences({});
       setP2pkKey(null);
+      setIncomingTransfers([]);
       proofRecordCache.current.clear();
+      incomingTransferRecordsRef.current = [];
+      // Reset startup recovery flag so reconnection triggers fresh recovery
+      startupRecoveryDone.current = false;
     }
   }, [enbox, isConnected]);
 
@@ -182,11 +204,15 @@ export function useWallet() {
     }
   }, [repo]);
 
-  const refreshProofs = useCallback(async () => {
+  /**
+   * Load all proofs from the DWN and update React state.
+   * Returns the loaded proofs directly (not via React state, which is async).
+   */
+  const refreshProofs = useCallback(async (): Promise<StoredProof[]> => {
     if (!repo || mints.length === 0) {
       setProofs([]);
       proofRecordCache.current.clear();
-      return;
+      return [];
     }
     try {
       const allProofs: StoredProof[] = [];
@@ -217,8 +243,10 @@ export function useWallet() {
       }
       proofRecordCache.current = newCache;
       setProofs(allProofs);
+      return allProofs;
     } catch (err) {
       console.error('Failed to load proofs:', err);
+      return [];
     }
   }, [repo, mints]);
 
@@ -317,6 +345,38 @@ export function useWallet() {
     }
   }, [repo]);
 
+  /**
+   * Query the user's DWN for incoming transfer protocol records.
+   *
+   * Stores both the transfer data AND the DWN record reference so we can
+   * delete the record after successful redemption (idempotency).
+   */
+  const checkIncomingTransfers = useCallback(async () => {
+    const transferTyped = transferTypedRef.current;
+    if (!transferTyped) return;
+    try {
+      const { records } = await transferTyped.records.query({
+        protocolPath: 'transfer',
+      });
+      if (!records || records.length === 0) {
+        setIncomingTransfers([]);
+        return;
+      }
+
+      const transfers: Array<{ data: TransferData; record: any }> = [];
+      for (const record of records) {
+        try {
+          const data: TransferData = await record.data.json();
+          transfers.push({ data, record });
+        } catch { /* skip unreadable records */ }
+      }
+      incomingTransferRecordsRef.current = transfers;
+      setIncomingTransfers(transfers.map(t => t.data));
+    } catch (err) {
+      console.warn('[nutsd] Failed to check incoming transfers:', err);
+    }
+  }, []);
+
   // --- Initial load ---
   useEffect(() => {
     if (!repo) return;
@@ -325,13 +385,37 @@ export function useWallet() {
       .finally(() => setLoading(false));
   }, [repo, refreshMints, refreshTransactions, refreshPreferences, loadP2pkKey]);
 
-  // Proofs and keysets depend on mints being loaded
+  // Proofs/keysets load after mints; startup recovery runs once proofs are loaded.
+  const startupRecoveryDone = useRef(false);
+  const startupRecoveryRef = useRef<(freshProofs: StoredProof[]) => Promise<void>>(async () => {});
+
   useEffect(() => {
-    if (mints.length > 0) {
-      refreshProofs();
-      refreshKeysets();
-    }
-  }, [mints, refreshProofs, refreshKeysets]);
+    let cancelled = false;
+
+    (async () => {
+      // Load proofs and keysets (depend on mints being present)
+      let freshProofs: StoredProof[] = [];
+      if (mints.length > 0) {
+        freshProofs = await refreshProofs();
+        await refreshKeysets();
+      }
+      // Incoming transfers checked regardless of mint count
+      await checkIncomingTransfers();
+
+      // Startup recovery: runs ONCE, AFTER proofs are loaded.
+      // Pass freshProofs directly — React state may not have committed yet.
+      if (!cancelled && !startupRecoveryDone.current) {
+        startupRecoveryDone.current = true;
+        try {
+          await startupRecoveryRef.current(freshProofs);
+        } catch (err) {
+          console.error('[nutsd] Startup recovery failed:', err);
+        }
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [mints, refreshProofs, refreshKeysets, checkIncomingTransfers]);
 
   // --- Subscriptions ---
   const refreshRef = useRef<() => void>(() => {});
@@ -518,8 +602,14 @@ export function useWallet() {
    * This is the crash recovery mechanism. Without it, proofs marked pending
    * before a crash would be stuck in limbo forever.
    */
-  const reconcilePendingProofs = useCallback(async () => {
-    const pendingProofs = proofs.filter(p => p.state === 'pending');
+  /**
+   * @param loadedProofs - Pass freshly loaded proofs directly to avoid
+   *   depending on React state (which may not have committed yet after
+   *   setProofs). Falls back to the `proofs` state if not provided.
+   */
+  const reconcilePendingProofs = useCallback(async (loadedProofs?: StoredProof[]) => {
+    const allProofs = loadedProofs ?? proofs;
+    const pendingProofs = allProofs.filter(p => p.state === 'pending');
     if (pendingProofs.length === 0) return;
 
     setReconciling(true);
@@ -814,6 +904,163 @@ export function useWallet() {
   }, [deleteProof]);
 
   // =========================================================================
+  // Crash-safe proof persistence (WAL pattern)
+  // =========================================================================
+
+  /**
+   * Safely persist proofs received from a mint swap using a write-ahead stash.
+   *
+   * The mint swap is irreversible — once the mint accepts, the old proofs are
+   * spent and the new proofs are the ONLY copy. If per-proof DWN writes fail,
+   * those proofs are lost forever.
+   *
+   * This function writes a single "stash" record containing ALL proofs FIRST,
+   * then writes individual proof records, then deletes the stash. If the app
+   * crashes between the stash write and the final cleanup, `recoverProofStashes()`
+   * on next startup replays the stash.
+   *
+   * @param mintContextId - DWN context ID of the mint (must exist)
+   * @param mintUrl - Mint URL (for stash metadata)
+   * @param unit - Currency unit
+   * @param proofDataList - Full proof set from the mint swap
+   */
+  const safeStoreReceivedProofs = useCallback(async (
+    mintContextId: string,
+    mintUrl: string,
+    unit: string,
+    proofDataList: ProofData[],
+  ): Promise<void> => {
+    if (!repo) throw new Error('Repository not available');
+    if (proofDataList.length === 0) return;
+
+    // STEP 1: Write stash record — single atomic DWN write.
+    // This is the crash checkpoint. If this succeeds, we can always recover.
+    const stashData: ProofStashData = {
+      mintUrl,
+      mintContextId,
+      unit,
+      proofs    : proofDataList,
+      createdAt : new Date().toISOString(),
+    };
+    const { record: stashRecord } = await repo.proofStash.create({ data: stashData });
+    if (!stashRecord) {
+      throw new Error(
+        'Failed to write proof stash. Proofs from this operation may not be ' +
+        'persisted. Check your DWN connectivity and try again.',
+      );
+    }
+
+    // STEP 2: Write individual proof records from the stash.
+    // If this fails partway, the stash still has everything.
+    try {
+      for (const proofData of proofDataList) {
+        await addProof(mintContextId, proofData);
+      }
+    } catch (err) {
+      // Partial write — stash preserved for recovery on next startup.
+      console.error(
+        `[nutsd] Partial proof write failure (${proofDataList.length} proofs, stash preserved):`,
+        err,
+      );
+      return; // Do NOT delete the stash
+    }
+
+    // STEP 3: All proofs written — delete the stash.
+    try {
+      await stashRecord.delete();
+    } catch {
+      // Stash deletion failed — harmless. recoverProofStashes() cleans it up.
+      console.warn('[nutsd] Failed to delete proof stash (will clean up on next startup)');
+    }
+  }, [repo, addProof]);
+
+  /**
+   * Recover any incomplete proof stashes on startup.
+   *
+   * For each stash:
+   * 1. Ensure the mint record exists
+   * 2. Load existing proofs for that mint
+   * 3. For each proof in the stash, check if it was already written (dedup by secret)
+   * 4. Write any missing proofs
+   * 5. Delete the stash
+   *
+   * Delegates to the extracted `recoverStashes()` pure function (same code
+   * that is tested in proof-stash-recovery.test.ts), wiring DWN access as
+   * injected deps. This ensures the tested code IS the production code.
+   */
+  /** @returns true if any proofs were recovered (caller should re-load proofs). */
+  const recoverProofStashes = useCallback(async (): Promise<boolean> => {
+    if (!repo) return false;
+
+    const deps: RecoveryDeps = {
+      getStashes: async () => {
+        const { records } = await repo.proofStash.query();
+        if (!records) return [];
+        const stashes = [];
+        for (const record of records) {
+          try {
+            const data: ProofStashData = await record.data.json();
+            stashes.push({ data, delete: () => record.delete() });
+          } catch { /* skip unreadable */ }
+        }
+        return stashes;
+      },
+      getExistingSecrets: async (mintContextId: string) => {
+        const secrets = new Set<string>();
+        try {
+          const { records: proofRecords } = await repo.mint.proof.query(mintContextId);
+          for (const pr of proofRecords) {
+            try {
+              const pd: ProofData = await pr.data.json();
+              secrets.add(pd.secret);
+            } catch { /* skip */ }
+          }
+        } catch { /* no existing proofs */ }
+        return secrets;
+      },
+      writeProof: async (mintContextId: string, proof: ProofData) => {
+        await addProof(mintContextId, proof);
+      },
+      ensureMint: async (mintUrl: string, unit: string) => {
+        let mint = mints.find(m => m.url === mintUrl);
+        if (!mint) {
+          try {
+            const newMint = await addMint({ url: mintUrl, unit, active: true });
+            if (newMint) return newMint.contextId;
+          } catch { /* unreachable */ }
+          return null;
+        }
+        return mint.contextId;
+      },
+    };
+
+    const result = await recoverStashes(deps);
+    if (result.proofsRecovered > 0 || result.proofsFailed > 0) {
+      console.log(
+        `[nutsd] Stash recovery: ${result.proofsRecovered} recovered, ` +
+        `${result.proofsFailed} failed, ${result.proofsSkipped} skipped, ` +
+        `${result.stashesCompleted}/${result.stashesFound} stashes completed`,
+      );
+    }
+    return result.proofsRecovered > 0;
+  }, [repo, mints, addMint, addProof]);
+
+  // Wire startup recovery ref — called by the mints-dependent effect above
+  // AFTER proofs are loaded. The loaded proofs are passed directly to avoid
+  // depending on React state (setProofs is async and may not have committed).
+  useEffect(() => {
+    startupRecoveryRef.current = async (freshProofs: StoredProof[]) => {
+      const stashResult = await recoverProofStashes();
+      // If stash recovery wrote new proofs, re-load so reconciliation sees them.
+      // Otherwise use the pre-loaded snapshot (avoids an extra DWN round-trip).
+      const proofsForReconciliation = stashResult
+        ? await refreshProofs()
+        : freshProofs;
+      await reconcilePendingProofs(proofsForReconciliation);
+    };
+  }, [recoverProofStashes, refreshProofs, reconcilePendingProofs]);
+
+  // =========================================================================
   // Transaction CRUD
   // =========================================================================
   // No tags on transaction records — encrypted type.
@@ -862,6 +1109,109 @@ export function useWallet() {
       console.warn('Failed to clear transaction token:', err);
     }
   }, [repo]);
+
+  // =========================================================================
+  // Incoming P2P transfers
+  // =========================================================================
+
+  /**
+   * Redeem an incoming P2PK-locked transfer.
+   *
+   * SAFETY: Ensures the mint is known (auto-adds if reachable) BEFORE
+   * redeeming. This prevents the fund-loss scenario where proofs are
+   * redeemed from the mint but never persisted because no local mint
+   * record exists.
+   *
+   * After successful redemption, deletes the transfer record from the DWN
+   * so it does not reappear on the next startup (idempotency).
+   */
+  const redeemIncomingTransfer = useCallback(async (transfer: TransferData, index: number) => {
+    if (!p2pkKey?.privateKey) {
+      throw new Error('Cannot redeem P2PK transfer: no private key available');
+    }
+
+    const releaseLock = await acquireWalletLock('p2p-redeem');
+    try {
+      return await _redeemIncomingTransferInner(transfer, index);
+    } finally {
+      releaseLock();
+    }
+  }, [p2pkKey, mints, addMint, safeStoreReceivedProofs, addTransaction]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Inner redeem logic (called under lock). */
+  const _redeemIncomingTransferInner = useCallback(async (transfer: TransferData, index: number) => {
+    if (!p2pkKey?.privateKey) {
+      throw new Error('Cannot redeem P2PK transfer: no private key available');
+    }
+
+    // STEP 1: Ensure the mint is known. If not, auto-add it.
+    // This MUST happen before redemption to guarantee proofs can be persisted.
+    let mint = mints.find(m => m.url === transfer.mintUrl);
+    if (!mint) {
+      // Auto-add the mint. If unreachable, this throws and we do NOT redeem.
+      const newMint = await addMint({
+        url    : transfer.mintUrl,
+        unit   : transfer.unit,
+        active : true,
+      });
+      if (!newMint) {
+        throw new Error(
+          `Cannot redeem: mint ${transfer.mintUrl} is unreachable. ` +
+          'Add the mint manually first, then try again.',
+        );
+      }
+      mint = newMint;
+    }
+
+    // STEP 2: Redeem the P2PK-locked token with the mint.
+    const newProofs = await receiveP2pkLocked(
+      transfer.mintUrl, transfer.token, p2pkKey.privateKey, transfer.unit,
+    );
+
+    // STEP 3: Persist the fresh proofs using the crash-safe stash pattern.
+    // The mint has already issued them — these are the ONLY copy.
+    // safeStoreReceivedProofs writes a stash first, then individual records.
+    const proofDataList: ProofData[] = newProofs.map(proof => ({
+      amount  : proof.amount,
+      id      : proof.id,
+      secret  : proof.secret,
+      C       : proof.C,
+      state   : 'unspent' as const,
+      dleq    : proof.dleq ? { e: String(proof.dleq.e), s: String(proof.dleq.s), r: String(proof.dleq.r) } : undefined,
+      witness : proof.witness ? (typeof proof.witness === 'string' ? proof.witness : JSON.stringify(proof.witness)) : undefined,
+    }));
+    await safeStoreReceivedProofs(mint.contextId, transfer.mintUrl, transfer.unit, proofDataList);
+
+    // STEP 4: Record the transaction.
+    const totalReceived = newProofs.reduce((s, p) => s + p.amount, 0);
+    await addTransaction({
+      type       : 'p2p-receive',
+      amount     : totalReceived,
+      unit       : transfer.unit,
+      mintUrl    : transfer.mintUrl,
+      status     : 'completed',
+      senderDid  : transfer.senderDid,
+      memo       : transfer.memo,
+      createdAt  : new Date().toISOString(),
+    });
+
+    // STEP 5: Delete the transfer record from the DWN so it does not
+    // come back on the next startup. This is best-effort — if deletion
+    // fails, the user will see the transfer again but the re-claim
+    // attempt will fail at the mint (tokens already swapped).
+    try {
+      const transferEntry = incomingTransferRecordsRef.current[index];
+      if (transferEntry?.record) {
+        await transferEntry.record.delete();
+      }
+    } catch (err) {
+      console.warn('[nutsd] Failed to delete claimed transfer record:', err);
+    }
+
+    // STEP 6: Remove from local UI state.
+    incomingTransferRecordsRef.current = incomingTransferRecordsRef.current.filter((_, i) => i !== index);
+    setIncomingTransfers(prev => prev.filter((_, i) => i !== index));
+  }, [p2pkKey, mints, addMint, safeStoreReceivedProofs, addTransaction]);
 
   // =========================================================================
   // Preferences
@@ -931,6 +1281,10 @@ export function useWallet() {
     revertProofsToUnspent,
     reconcilePendingProofs,
 
+    // Crash-safe proof persistence
+    safeStoreReceivedProofs,
+    recoverProofStashes,
+
     // Fee helpers
     getInputFeeForMint,
 
@@ -941,6 +1295,11 @@ export function useWallet() {
 
     // Preferences
     updatePreferences,
+
+    // Incoming P2P transfers
+    incomingTransfers,
+    checkIncomingTransfers,
+    redeemIncomingTransfer,
 
     // Repo access for advanced operations
     repo,

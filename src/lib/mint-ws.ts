@@ -66,10 +66,12 @@ export function subscribeToQuote({
   let disposed = false;
   let settled = false;
   let fallbackStop: (() => void) | null = null;
+  let expiryTimerId: ReturnType<typeof setTimeout> | undefined;
 
   const stop = () => {
     disposed = true;
     settled = true;
+    if (expiryTimerId) clearTimeout(expiryTimerId);
     ws?.close();
     ws = null;
     fallbackStop?.();
@@ -77,6 +79,8 @@ export function subscribeToQuote({
 
   const fallbackToPolling = () => {
     if (disposed || settled) return;
+    // Clean up the WS expiry timer — the polling fallback handles expiry on its own
+    if (expiryTimerId) { clearTimeout(expiryTimerId); expiryTimerId = undefined; }
     fallbackStop = startMintQuotePolling({
       check: checkFn,
       onPaid: callbacks.onPaid,
@@ -92,6 +96,27 @@ export function subscribeToQuote({
 
     ws.onopen = () => {
       if (disposed) { ws?.close(); return; }
+
+      // Schedule expiry timer — the WebSocket path must also respect quote expiry.
+      // Without this, the dialog stays in "waiting" state forever if the quote
+      // expires while the socket is open.
+      if (expiry != null) {
+        const msUntilExpiry = expiry * 1000 - Date.now();
+        if (msUntilExpiry <= 0) {
+          settled = true;
+          ws?.close();
+          callbacks.onExpired?.();
+          return;
+        }
+        expiryTimerId = setTimeout(() => {
+          if (!disposed && !settled) {
+            settled = true;
+            ws?.close();
+            callbacks.onExpired?.();
+          }
+        }, msUntilExpiry);
+      }
+
       // Send NUT-17 subscription request
       const subRequest = JSON.stringify({
         jsonrpc: '2.0',

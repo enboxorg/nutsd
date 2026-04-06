@@ -169,6 +169,35 @@ export type P2pkKeyData = {
   createdAt: string;
 };
 
+/**
+ * Proof stash — write-ahead log entry for crash-safe proof persistence.
+ *
+ * Written as a SINGLE DWN record immediately after a mint swap returns new
+ * proofs. Contains the full set of proofs from the swap. Individual proof
+ * records are then written from the stash. Once all proof records succeed,
+ * the stash is deleted.
+ *
+ * If the app crashes between the mint swap and completing the per-proof
+ * writes, `recoverProofStashes()` on next startup finds any remaining
+ * stash records, deduplicates against existing proofs (by secret), fills
+ * in gaps, and deletes the stash.
+ *
+ * This pattern reduces the loss window from "N DWN writes must all succeed"
+ * to "one DWN write must succeed immediately after the mint response."
+ */
+export type ProofStashData = {
+  /** Mint URL these proofs came from. */
+  mintUrl: string;
+  /** Mint context ID for storing proof records. */
+  mintContextId: string;
+  /** Currency unit. */
+  unit: string;
+  /** Full proof set from the mint swap. */
+  proofs: ProofData[];
+  /** ISO timestamp when the stash was created. */
+  createdAt: string;
+};
+
 /** Wallet-level preferences (singleton). */
 export type PreferenceData = {
   /** Default mint URL. */
@@ -189,6 +218,7 @@ export type CashuWalletSchemaMap = {
   proof: ProofData;
   transaction: TransactionData;
   p2pkKey: P2pkKeyData;
+  proofStash: ProofStashData;
   preference: PreferenceData;
 };
 
@@ -224,6 +254,11 @@ export const CashuWalletDefinition = {
       dataFormats         : ['application/json'],
       encryptionRequired  : true,
     },
+    proofStash: {
+      schema              : 'https://enbox.id/schemas/cashu-wallet/proof-stash',
+      dataFormats         : ['application/json'],
+      encryptionRequired  : true,
+    },
     preference: {
       schema      : 'https://enbox.id/schemas/cashu-wallet/preference',
       dataFormats : ['application/json'],
@@ -250,6 +285,10 @@ export const CashuWalletDefinition = {
     p2pkKey: {
       $recordLimit: { max: 1, strategy: 'reject' },
     },
+    // Proof stash — WAL entries for crash-safe proof persistence.
+    // Normally empty; populated briefly during receive, cleaned up immediately.
+    // If any exist on startup, recoverProofStashes() replays them.
+    proofStash: {},
     preference: {
       $recordLimit: { max: 1, strategy: 'reject' },
     },

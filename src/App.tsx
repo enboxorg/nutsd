@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback } from 'react';
 
 import { ThemeProvider, useTheme } from '@/components/theme-provider';
 import { ErrorBoundary } from '@/components/error-boundary';
@@ -26,10 +26,11 @@ import { Toaster } from 'sonner';
 import { QrScanner } from '@/components/wallet/qr-scanner';
 import { PasteActionBar } from '@/components/wallet/paste-action-bar';
 import { detectInput } from '@/lib/input-detect';
-import { receiveToken } from '@/cashu/wallet-ops';
+import { receiveToken, getMintInfo } from '@/cashu/wallet-ops';
 import { extractMintUrl } from '@/cashu/token-utils';
+import { acquireWalletLock } from '@/lib/wallet-mutex';
 
-import { toastError, toastSuccess } from '@/lib/utils';
+import { toastError, toastSuccess, formatAmount } from '@/lib/utils';
 import { truncateMiddle } from '@/lib/utils';
 import { checkTokenSpent } from '@/cashu/wallet-ops';
 import { brand } from '@/lib/brand';
@@ -44,6 +45,7 @@ import {
   KeyIcon,
   CopyIcon,
   UsersIcon,
+  DownloadIcon,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -51,7 +53,7 @@ import {
 // ---------------------------------------------------------------------------
 
 function WalletHome() {
-  const { did, disconnect } = useEnbox();
+  const { did, disconnect, enbox } = useEnbox();
   const { theme, setTheme } = useTheme();
   const {
     mints,
@@ -68,15 +70,16 @@ function WalletHome() {
     reconciling,
     addMint,
     removeMint,
-    addProof,
     deleteProofs,
     addTransaction,
     clearTransactionToken,
     getUnspentProofsForMint,
     markProofsPending,
     revertProofsToUnspent,
-    reconcilePendingProofs,
-    proofs,
+    safeStoreReceivedProofs,
+    incomingTransfers,
+    checkIncomingTransfers,
+    redeemIncomingTransfer,
   } = useWallet();
 
   // Dialog state
@@ -93,23 +96,21 @@ function WalletHome() {
 
   const hasMints = mints.length > 0;
 
-  // --- Startup reconciliation ---
-  // Run once after initial proofs load. Checks all pending proofs with mints.
-  const reconciliationDone = useRef(false);
-  useEffect(() => {
-    if (!loading && proofs.length > 0 && !reconciliationDone.current) {
-      reconciliationDone.current = true;
-      reconcilePendingProofs().catch((err: unknown) =>
-        console.error('[nutsd] Startup reconciliation failed:', err),
-      );
-    }
-  }, [loading, proofs, reconcilePendingProofs]);
-
   // --- Proof persistence helpers ---
+  // Startup recovery (stash + pending reconciliation) is handled inside
+  // useWallet() hook, sequenced AFTER proofs are loaded.
 
-  /** Store Cashu proofs as DWN records. Preserves all fields (dleq, witness). */
+  /**
+   * Store Cashu proofs as DWN records using the crash-safe stash pattern.
+   *
+   * Writes a single stash record FIRST (crash checkpoint), then individual
+   * proof records, then deletes the stash. If the app crashes between the
+   * stash write and cleanup, `recoverProofStashes()` on next startup fills
+   * in any missing proofs from the stash.
+   */
   const storeNewProofs = useCallback(async (mintContextId: string, cashuProofs: Proof[]) => {
-    for (const proof of cashuProofs) {
+    const mint = mints.find(m => m.contextId === mintContextId);
+    const proofDataList: ProofData[] = cashuProofs.map(proof => {
       const data: ProofData = {
         amount  : proof.amount,
         id      : proof.id,
@@ -117,7 +118,6 @@ function WalletHome() {
         C       : proof.C,
         state   : 'unspent',
       };
-      // Preserve optional NUT-12 DLEQ proof and NUT-10/11 witness
       if (proof.dleq) {
         data.dleq = {
           e: String(proof.dleq.e),
@@ -126,14 +126,19 @@ function WalletHome() {
         };
       }
       if (proof.witness) {
-        // witness can be string | P2PKWitness | HTLCWitness — serialize to string
         data.witness = typeof proof.witness === 'string'
           ? proof.witness
           : JSON.stringify(proof.witness);
       }
-      await addProof(mintContextId, data);
-    }
-  }, [addProof]);
+      return data;
+    });
+    await safeStoreReceivedProofs(
+      mintContextId,
+      mint?.url ?? '',
+      mint?.unit ?? 'sat',
+      proofDataList,
+    );
+  }, [mints, safeStoreReceivedProofs]);
 
   /** Store proofs, auto-adding the mint if unknown. */
   const storeNewProofsForMintUrl = useCallback(async (
@@ -194,13 +199,25 @@ function WalletHome() {
     const detected = detectInput(raw);
     switch (detected.type) {
       case 'cashu-token':
-        setShowReceive(true);
-        // Process the token directly
+        // Process the scanned token with mint-safe ordering
         (async () => {
+          const releaseLock = await acquireWalletLock('scan-receive').catch(() => null);
+          if (!releaseLock) {
+            toastError('Wallet busy', new Error('Another operation is in progress.'));
+            return;
+          }
           try {
             const mintUrl = extractMintUrl(detected.value);
             if (!mintUrl) throw new Error('Could not determine mint URL from token');
-            const knownMint = mints.find(m => m.url === mintUrl);
+
+            // Ensure mint is reachable BEFORE redeeming
+            let knownMint = mints.find(m => m.url === mintUrl);
+            if (!knownMint) {
+              await getMintInfo(mintUrl); // throws if unreachable
+              await storeNewProofsForMintUrl('', [], mintUrl); // auto-add
+              knownMint = mints.find(m => m.url === mintUrl);
+            }
+
             const newProofs = await receiveToken(mintUrl, detected.value);
             const totalReceived = newProofs.reduce((s, p) => s + p.amount, 0);
             const contextId = knownMint?.contextId ?? '';
@@ -208,14 +225,15 @@ function WalletHome() {
             await recordTransaction({
               type   : 'receive',
               amount : totalReceived,
-              unit   : 'sat',
+              unit   : knownMint?.unit ?? 'sat',
               mintUrl,
               status : 'completed',
             });
-            toastSuccess('Token received', `+${totalReceived} sat`);
-            setShowReceive(false);
+            toastSuccess('Token received', `+${totalReceived} ${knownMint?.unit ?? 'sat'}`);
           } catch (err) {
             toastError('Failed to receive token', err);
+          } finally {
+            releaseLock();
           }
         })();
         break;
@@ -242,26 +260,37 @@ function WalletHome() {
   /** Reclaim an unclaimed sent token (NUT-07 reports all proofs UNSPENT). */
   const handleReclaimToken = useCallback(async (tx: Transaction) => {
     if (!tx.cashuToken) throw new Error('No token to reclaim');
-    const mintUrl = tx.mintUrl;
-    const newProofs = await receiveToken(mintUrl, tx.cashuToken, tx.unit);
-    const totalReclaimed = newProofs.reduce((s, p) => s + p.amount, 0);
+    const releaseLock = await acquireWalletLock('reclaim');
+    try {
+      const mintUrl = tx.mintUrl;
 
-    const knownMint = mints.find(m => m.url === mintUrl);
-    const contextId = knownMint?.contextId ?? '';
-    await storeNewProofsForMintUrl(contextId, newProofs, mintUrl);
+      // Ensure mint exists before redeeming (user may have removed mint since sending)
+      let knownMint = mints.find(m => m.url === mintUrl);
+      if (!knownMint) {
+        await getMintInfo(mintUrl); // throws if unreachable
+        await storeNewProofsForMintUrl('', [], mintUrl); // auto-add
+        knownMint = mints.find(m => m.url === mintUrl);
+      }
 
-    await recordTransaction({
-      type   : 'receive',
-      amount : totalReclaimed,
-      unit   : tx.unit,
-      mintUrl,
-      status : 'completed',
-      memo   : 'Reclaimed unclaimed token',
-    });
+      const newProofs = await receiveToken(mintUrl, tx.cashuToken, tx.unit);
+      const totalReclaimed = newProofs.reduce((s, p) => s + p.amount, 0);
+      const contextId = knownMint?.contextId ?? '';
+      await storeNewProofsForMintUrl(contextId, newProofs, mintUrl);
 
-    // Clear the bearer token from the original send transaction
-    clearTransactionToken(tx.id);
-    toastSuccess('Token reclaimed', `+${totalReclaimed} ${tx.unit}`);
+      await recordTransaction({
+        type   : 'receive',
+        amount : totalReclaimed,
+        unit   : tx.unit,
+        mintUrl,
+        status : 'completed',
+        memo   : 'Reclaimed unclaimed token',
+      });
+
+      clearTransactionToken(tx.id);
+      toastSuccess('Token reclaimed', `+${totalReclaimed} ${tx.unit}`);
+    } finally {
+      releaseLock();
+    }
   }, [mints, storeNewProofsForMintUrl, recordTransaction, clearTransactionToken]);
 
   const handleDisconnect = async () => {
@@ -342,6 +371,37 @@ function WalletHome() {
                     ? `Checking ${pendingProofCount} pending proof(s) with mint...`
                     : `${pendingProofCount} proof(s) in pending state — will be checked on next startup.`}
                 </span>
+              </div>
+            )}
+
+            {/* Incoming P2P transfers banner */}
+            {incomingTransfers.length > 0 && (
+              <div className="rounded-lg bg-[var(--color-info)]/10 border border-[var(--color-info)]/30 p-3 space-y-2">
+                <div className="flex items-center justify-between text-sm font-medium">
+                  <div className="flex items-center gap-2">
+                    <DownloadIcon className="h-4 w-4 text-[var(--color-info)]" />
+                    {incomingTransfers.length} incoming P2P transfer{incomingTransfers.length !== 1 ? 's' : ''}
+                  </div>
+                  <button
+                    onClick={() => checkIncomingTransfers()}
+                    className="text-[10px] text-muted-foreground hover:text-foreground"
+                  >
+                    Refresh
+                  </button>
+                </div>
+                {incomingTransfers.map((transfer, i) => (
+                  <div key={i} className="flex items-center justify-between text-xs">
+                    <span className="text-muted-foreground">
+                      {formatAmount(transfer.amount, transfer.unit)} from {transfer.senderDid?.slice(0, 20)}...
+                    </span>
+                    <button
+                      onClick={() => redeemIncomingTransfer(transfer, i).catch(err => toastError('Redeem failed', err))}
+                      className="px-2 py-1 rounded-full bg-primary text-primary-foreground text-[10px] font-medium"
+                    >
+                      Claim
+                    </button>
+                  </div>
+                ))}
               </div>
             )}
 
@@ -466,6 +526,7 @@ function WalletHome() {
           mintBalances={mintBalances}
           getUnspentProofs={getUnspentProofsForMint}
           senderDid={did}
+          enbox={enbox}
           onClose={() => setShowSendToDid(false)}
           onNewProofs={storeNewProofs}
           onOldProofsSpent={removeProofsByIds}
@@ -476,6 +537,7 @@ function WalletHome() {
       {showReceive && (
         <ReceiveDialog
           mints={mints}
+          p2pkPrivateKey={p2pkKey?.privateKey}
           onClose={() => setShowReceive(false)}
           onProofsReceived={storeNewProofsForMintUrl}
           onTransactionCreated={recordTransaction}

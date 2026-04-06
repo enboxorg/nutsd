@@ -103,6 +103,60 @@ export function encodeToken(
 }
 
 // ---------------------------------------------------------------------------
+// P2PK detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if a Cashu token contains P2PK-locked proofs (NUT-10/11).
+ *
+ * P2PK proofs have a structured secret: `["P2PK", {"nonce": "...", "data": "02..."}]`.
+ * This function decodes the token and checks if any proof's secret follows
+ * this format.
+ *
+ * @param encodedToken - Encoded Cashu token string
+ * @returns true if any proof is P2PK-locked
+ */
+export function isP2pkLockedToken(encodedToken: string): boolean {
+  try {
+    const decoded = getDecodedToken(encodedToken);
+    return decoded.proofs.some(isP2pkLockedProof);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check if a single proof is P2PK-locked.
+ *
+ * NUT-10 secrets are JSON arrays where the first element is the spending
+ * condition kind. For P2PK (NUT-11), this is `"P2PK"`.
+ */
+export function isP2pkLockedProof(proof: Proof): boolean {
+  try {
+    if (!proof.secret || typeof proof.secret !== 'string') return false;
+    const parsed = JSON.parse(proof.secret);
+    return Array.isArray(parsed) && parsed[0] === 'P2PK';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Extract the P2PK public key from a locked proof's secret.
+ *
+ * @returns The compressed secp256k1 public key hex, or null if not P2PK-locked.
+ */
+export function extractP2pkPubkey(proof: Proof): string | null {
+  try {
+    const parsed = JSON.parse(proof.secret);
+    if (Array.isArray(parsed) && parsed[0] === 'P2PK' && parsed[1]?.data) {
+      return parsed[1].data;
+    }
+  } catch { /* not P2PK */ }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Proof selection
 // ---------------------------------------------------------------------------
 
