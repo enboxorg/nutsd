@@ -5,6 +5,7 @@ import { swapProofs } from '@/cashu/wallet-ops';
 import { encodeToken } from '@/cashu/token-utils';
 import { decodePaymentRequest, type PaymentRequest } from '@/cashu/payment-request';
 import { acquireWalletLock } from '@/lib/wallet-mutex';
+import { DialogWrapper } from '@/components/ui/dialog-wrapper';
 import type { Mint, StoredProof } from '@/hooks/use-wallet';
 import type { Proof } from '@cashu/cashu-ts';
 import type { TransactionData } from '@/protocol/cashu-wallet-protocol';
@@ -39,14 +40,15 @@ export const PayRequestDialog: React.FC<PayRequestDialogProps> = ({
   let request: PaymentRequest;
   try {
     request = decodePaymentRequest(encodedRequest);
-  } catch {
+  } catch (err) {
+    console.warn('[nutsd] Payment request decode failed:', err);
     return (
-      <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-        <div className="bg-card border border-border p-6 rounded-xl shadow-xl max-w-sm w-full space-y-4">
+      <DialogWrapper open={true} onClose={onClose}>
+        <div className="space-y-4">
           <p className="text-sm text-destructive">Invalid payment request</p>
           <button onClick={onClose} className="w-full px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm">Close</button>
         </div>
-      </div>
+      </DialogWrapper>
     );
   }
 
@@ -72,7 +74,8 @@ export const PayRequestDialog: React.FC<PayRequestDialogProps> = ({
     setLoading(true);
 
     let releaseLock: (() => void) | undefined;
-    try { releaseLock = await acquireWalletLock('pay-request'); } catch {
+    try { releaseLock = await acquireWalletLock('pay-request'); } catch (err) {
+      console.warn('[nutsd] Wallet lock acquisition failed for pay-request:', err);
       toastError('Wallet busy', new Error('Another operation is in progress.'));
       setLoading(false); busyRef.current = false; return;
     }
@@ -116,14 +119,16 @@ export const PayRequestDialog: React.FC<PayRequestDialogProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-card border border-border p-6 rounded-xl shadow-xl max-w-sm w-full space-y-4">
+    <DialogWrapper open={true} onClose={onClose} preventClose={step === 'sending'}>
+      <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <FileTextIcon className="h-5 w-5 text-primary" />
             <h3 className="text-lg font-semibold">Payment Request</h3>
           </div>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><XIcon className="h-4 w-4" /></button>
+          {step !== 'sending' && (
+            <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><XIcon className="h-4 w-4" /></button>
+          )}
         </div>
 
         {step === 'confirm' && (
@@ -205,10 +210,18 @@ export const PayRequestDialog: React.FC<PayRequestDialogProps> = ({
           <div className="flex flex-col items-center py-6 gap-3">
             <div className="text-4xl text-destructive">!</div>
             <p className="text-xs text-muted-foreground text-center">{errorMsg}</p>
-            <button onClick={onClose} className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm">Close</button>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setStep('confirm')}
+                className="px-4 py-2 rounded-lg border border-border text-sm hover:bg-muted"
+              >
+                Try Again
+              </button>
+              <button onClick={onClose} className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm">Close</button>
+            </div>
           </div>
         )}
       </div>
-    </div>
+    </DialogWrapper>
   );
 };

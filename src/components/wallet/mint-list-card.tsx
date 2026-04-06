@@ -5,6 +5,7 @@ import type { Mint } from '@/hooks/use-wallet';
 interface MintListCardProps {
   mints: Mint[];
   mintBalances: Map<string, number>;
+  mintHealth?: Map<string, boolean>;
   onAddMint: () => void;
   onSelectMint: (mint: Mint) => void;
 }
@@ -12,6 +13,7 @@ interface MintListCardProps {
 export const MintListCard: React.FC<MintListCardProps> = ({
   mints,
   mintBalances,
+  mintHealth,
   onAddMint,
   onSelectMint,
 }) => {
@@ -55,8 +57,13 @@ export const MintListCard: React.FC<MintListCardProps> = ({
                     <ServerIcon className="h-3.5 w-3.5" />
                   </div>
                   <div className="min-w-0">
-                    <div className="text-sm font-medium truncate">
+                    <div className="text-sm font-medium truncate flex items-center gap-1.5">
                       {mint.name || truncateMintUrl(mint.url)}
+                      <div className={`h-2 w-2 rounded-full shrink-0 ${
+                        mintHealth?.get(mint.contextId) === true ? 'bg-[var(--color-success)]' :
+                        mintHealth?.get(mint.contextId) === false ? 'bg-destructive' :
+                        'bg-muted-foreground/30'
+                      }`} title={mintHealth?.get(mint.contextId) === true ? 'Online' : mintHealth?.get(mint.contextId) === false ? 'Offline' : 'Checking...'} />
                     </div>
                     <div className="text-xs text-muted-foreground truncate">
                       {mint.url}

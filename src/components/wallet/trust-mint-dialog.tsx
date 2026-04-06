@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Loader2Icon, XIcon, ShieldAlertIcon, ArrowRightLeftIcon, ShieldCheckIcon } from 'lucide-react';
 import { toastError, formatAmount, truncateMintUrl } from '@/lib/utils';
 import { estimateCrossMintSwap, formatSwapFee, type CrossMintSwapEstimate } from '@/cashu/cross-mint-swap';
+import { DialogWrapper } from '@/components/ui/dialog-wrapper';
 import type { Mint } from '@/hooks/use-wallet';
 
 interface TrustMintDialogProps {
@@ -14,6 +15,12 @@ interface TrustMintDialogProps {
   defaultMint?: Mint;
   /** All known mints. */
   mints: Mint[];
+  /**
+   * True when the parent is executing onTrustAndClaim or onSwapToMint.
+   * These are the real money-moving operations (melt, swap, mint) that
+   * happen in App.tsx. The dialog must not be dismissible while they run.
+   */
+  busy?: boolean;
   onTrustAndClaim: () => void;
   onSwapToMint: (estimate: CrossMintSwapEstimate, targetMint: Mint) => void;
   onCancel: () => void;
@@ -28,8 +35,11 @@ export const TrustMintDialog: React.FC<TrustMintDialogProps> = ({
   onTrustAndClaim,
   onSwapToMint,
   onCancel,
+  busy = false,
 }) => {
   const [loading, setLoading] = useState(false);
+  // Prevent close during both local estimation AND parent-driven money operations.
+  const inFlight = loading || busy;
   const [swapEstimate, setSwapEstimate] = useState<CrossMintSwapEstimate | null>(null);
   const [selectedSwapMint, setSelectedSwapMint] = useState<Mint | null>(defaultMint ?? mints[0] ?? null);
 
@@ -53,16 +63,18 @@ export const TrustMintDialog: React.FC<TrustMintDialogProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-card border border-border p-6 rounded-xl shadow-xl max-w-sm w-full space-y-4">
+    <DialogWrapper open={true} onClose={onCancel} preventClose={inFlight}>
+      <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <ShieldAlertIcon className="h-5 w-5 text-[var(--color-warning)]" />
             <h3 className="text-lg font-semibold">Unknown Mint</h3>
           </div>
-          <button onClick={onCancel} className="text-muted-foreground hover:text-foreground">
-            <XIcon className="h-4 w-4" />
-          </button>
+          {!inFlight && (
+            <button onClick={onCancel} className="text-muted-foreground hover:text-foreground">
+              <XIcon className="h-4 w-4" />
+            </button>
+          )}
         </div>
 
         <div className="space-y-2">
@@ -77,10 +89,19 @@ export const TrustMintDialog: React.FC<TrustMintDialogProps> = ({
           </p>
         </div>
 
+        {/* Show spinner when parent is executing a money-moving operation */}
+        {busy && (
+          <div className="flex items-center justify-center gap-2 py-3">
+            <Loader2Icon className="h-5 w-5 animate-spin text-primary" />
+            <span className="text-sm text-muted-foreground">Processing...</span>
+          </div>
+        )}
+
         {/* Option 1: Trust and claim */}
         <button
           onClick={onTrustAndClaim}
-          className="w-full flex items-center gap-3 p-3 rounded-lg border border-border hover:bg-muted transition-colors text-left"
+          disabled={inFlight}
+          className="w-full flex items-center gap-3 p-3 rounded-lg border border-border hover:bg-muted transition-colors text-left disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <ShieldCheckIcon className="h-5 w-5 text-[var(--color-success)] shrink-0" />
           <div>
@@ -95,8 +116,8 @@ export const TrustMintDialog: React.FC<TrustMintDialogProps> = ({
             {!swapEstimate ? (
               <button
                 onClick={handleEstimateSwap}
-                disabled={loading}
-                className="w-full flex items-center gap-3 p-3 rounded-lg border border-primary/30 hover:bg-primary/5 transition-colors text-left"
+                disabled={inFlight}
+                className="w-full flex items-center gap-3 p-3 rounded-lg border border-primary/30 hover:bg-primary/5 transition-colors text-left disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <ArrowRightLeftIcon className="h-5 w-5 text-primary shrink-0" />
                 <div className="flex-1">
@@ -140,6 +161,6 @@ export const TrustMintDialog: React.FC<TrustMintDialogProps> = ({
           </div>
         )}
       </div>
-    </div>
+    </DialogWrapper>
   );
 };

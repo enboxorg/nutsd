@@ -47,7 +47,8 @@ export const PasteActionBar: React.FC<PasteActionBarProps> = ({
         return;
       }
       routeInput(text);
-    } catch {
+    } catch (err) {
+      console.warn('[nutsd] Clipboard read failed:', err);
       toastError('Paste failed', new Error('Clipboard access denied. Try pasting into the input field.'));
     } finally {
       setProcessing(false);

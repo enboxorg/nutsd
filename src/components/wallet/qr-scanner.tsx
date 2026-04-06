@@ -58,7 +58,9 @@ export const QrScanner: React.FC<QrScannerProps> = ({ onScan, onClose }) => {
                 handleDetected(barcodes[0].rawValue);
                 return;
               }
-            } catch { /* frame not ready */ }
+            } catch {
+              // Expected: video frame not ready for detection yet — retry on next animation frame
+            }
             animFrameId = requestAnimationFrame(scan);
           };
           animFrameId = requestAnimationFrame(scan);

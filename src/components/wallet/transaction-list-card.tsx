@@ -81,7 +81,8 @@ function TransactionRow({
       setCopied(true);
       toastSuccess('Token copied');
       setTimeout(() => setCopied(false), 2000);
-    } catch {
+    } catch (err) {
+      console.warn('[nutsd] Clipboard write failed:', err);
       toastError('Copy failed', new Error('Clipboard access denied'));
     }
   };
@@ -97,7 +98,8 @@ function TransactionRow({
       } else {
         setSpentState(isSpent ? 'spent' : 'pending');
       }
-    } catch {
+    } catch (err) {
+      console.warn('[nutsd] Token spent check failed:', err);
       setSpentState('unknown');
     }
   };
@@ -109,7 +111,8 @@ function TransactionRow({
     try {
       await onReclaimToken(tx);
       setSpentState('reclaimed');
-    } catch {
+    } catch (err) {
+      console.warn('[nutsd] Token reclaim failed:', err);
       toastError('Reclaim failed', new Error('Could not reclaim token. It may have already been claimed.'));
     } finally {
       setReclaiming(false);
@@ -226,9 +229,12 @@ export const TransactionListCard: React.FC<TransactionListCardProps> = ({
       </div>
 
       {recent.length === 0 ? (
-        <div className="p-4 text-center">
+        <div className="p-4 text-center space-y-1">
           <p className="text-xs text-muted-foreground">
-            No transactions yet. Deposit some sats to get started.
+            No transactions yet.
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Tap <span className="font-medium text-foreground">Deposit</span> to add funds via Lightning, or <span className="font-medium text-foreground">Receive</span> to claim a Cashu token.
           </p>
         </div>
       ) : (

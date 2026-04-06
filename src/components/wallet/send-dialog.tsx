@@ -5,6 +5,7 @@ import { toastError, toastSuccess, truncateMintUrl, formatAmount } from '@/lib/u
 import { swapProofs, estimateInputFee } from '@/cashu/wallet-ops';
 import { encodeToken } from '@/cashu/token-utils';
 import { acquireWalletLock } from '@/lib/wallet-mutex';
+import { DialogWrapper } from '@/components/ui/dialog-wrapper';
 import type { Mint, StoredProof } from '@/hooks/use-wallet';
 import type { Proof } from '@cashu/cashu-ts';
 import type { TransactionData } from '@/protocol/cashu-wallet-protocol';
@@ -71,7 +72,8 @@ export const SendDialog: React.FC<SendDialogProps> = ({
     let releaseLock: (() => void) | undefined;
     try {
       releaseLock = await acquireWalletLock('send');
-    } catch {
+    } catch (err) {
+      console.warn('[nutsd] Wallet lock acquisition failed for send:', err);
       toastError('Wallet busy', new Error('Another wallet operation is in progress. Please wait.'));
       setLoading(false);
       busyRef.current = false;
@@ -138,22 +140,25 @@ export const SendDialog: React.FC<SendDialogProps> = ({
       setCopied(true);
       toastSuccess('Token copied to clipboard');
       setTimeout(() => setCopied(false), 2000);
-    } catch {
+    } catch (err) {
+      console.warn('[nutsd] Clipboard write failed:', err);
       toastError('Copy failed', new Error('Clipboard access denied'));
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-card border border-border p-6 rounded-xl shadow-xl max-w-sm w-full space-y-4">
+    <DialogWrapper open={true} onClose={onClose} preventClose={loading}>
+      <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <SendIcon className="h-5 w-5 text-primary" />
             <h3 className="text-lg font-semibold">Send</h3>
           </div>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
-            <XIcon className="h-4 w-4" />
-          </button>
+          {!loading && (
+            <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
+              <XIcon className="h-4 w-4" />
+            </button>
+          )}
         </div>
 
         {step === 'amount' && (
@@ -259,6 +264,6 @@ export const SendDialog: React.FC<SendDialogProps> = ({
           </div>
         )}
       </div>
-    </div>
+    </DialogWrapper>
   );
 };

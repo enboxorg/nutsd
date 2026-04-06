@@ -59,7 +59,8 @@ export function decodePaymentRequest(encoded: string): PaymentRequest {
       mints       : data.m ?? data.mints ?? [],
       description : data.d ?? data.description,
     };
-  } catch {
+  } catch (err) {
+    console.warn('[nutsd] Payment request decode failed:', err);
     throw new Error('Invalid payment request: could not decode');
   }
 }

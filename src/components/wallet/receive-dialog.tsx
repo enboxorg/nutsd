@@ -7,6 +7,7 @@ import { subscribeToQuote } from '@/lib/mint-ws';
 import { extractMintUrl, isCashuToken, isP2pkLockedToken, parseToken } from '@/cashu/token-utils';
 import { receiveP2pkLocked } from '@/cashu/p2pk';
 import { QRCodeDisplay } from '@/components/qr-code';
+import { DialogWrapper } from '@/components/ui/dialog-wrapper';
 import type { Mint } from '@/hooks/use-wallet';
 import type { Proof } from '@cashu/cashu-ts';
 import type { TransactionData } from '@/protocol/cashu-wallet-protocol';
@@ -33,24 +34,28 @@ export const ReceiveDialog: React.FC<ReceiveDialogProps> = ({
   onTransactionCreated,
 }) => {
   const [tab, setTab] = useState<Tab>('token');
+  const [busy, setBusy] = useState(false);
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-card border border-border p-6 rounded-xl shadow-xl max-w-sm w-full space-y-4">
+    <DialogWrapper open={true} onClose={onClose} preventClose={busy}>
+      <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <DownloadIcon className="h-5 w-5 text-[var(--color-info)]" />
             <h3 className="text-lg font-semibold">Receive</h3>
           </div>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
-            <XIcon className="h-4 w-4" />
-          </button>
+          {!busy && (
+            <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
+              <XIcon className="h-4 w-4" />
+            </button>
+          )}
         </div>
 
         {/* Tab selector */}
         <div className="flex rounded-lg bg-muted p-0.5">
           <button
             onClick={() => setTab('token')}
+            disabled={busy}
             className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
               tab === 'token' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
             }`}
@@ -59,6 +64,7 @@ export const ReceiveDialog: React.FC<ReceiveDialogProps> = ({
           </button>
           <button
             onClick={() => setTab('lightning')}
+            disabled={busy}
             className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
               tab === 'lightning' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
             }`}
@@ -76,6 +82,7 @@ export const ReceiveDialog: React.FC<ReceiveDialogProps> = ({
             onClose={onClose}
             onProofsReceived={onProofsReceived}
             onTransactionCreated={onTransactionCreated}
+            onBusyChange={setBusy}
           />
         )}
 
@@ -85,10 +92,11 @@ export const ReceiveDialog: React.FC<ReceiveDialogProps> = ({
             onClose={onClose}
             onProofsReceived={onProofsReceived}
             onTransactionCreated={onTransactionCreated}
+            onBusyChange={setBusy}
           />
         )}
       </div>
-    </div>
+    </DialogWrapper>
   );
 };
 
@@ -104,9 +112,13 @@ const TokenTab: React.FC<{
   onClose: () => void;
   onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
-}> = ({ mints, p2pkPrivateKey, onUnknownMint, onClose, onProofsReceived, onTransactionCreated }) => {
+  /** Notify parent when an in-flight operation starts/stops. */
+  onBusyChange?: (busy: boolean) => void;
+}> = ({ mints, p2pkPrivateKey, onUnknownMint, onClose, onProofsReceived, onTransactionCreated, onBusyChange }) => {
   const [tokenInput, setTokenInput] = useState('');
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => { onBusyChange?.(loading); }, [loading, onBusyChange]);
 
   const handleReceive = async () => {
     const trimmed = tokenInput.trim();
@@ -238,7 +250,9 @@ const LightningTab: React.FC<{
   onClose: () => void;
   onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
-}> = ({ mints, onClose, onProofsReceived, onTransactionCreated }) => {
+  /** Notify parent when an in-flight operation starts/stops. */
+  onBusyChange?: (busy: boolean) => void;
+}> = ({ mints, onClose, onProofsReceived, onTransactionCreated, onBusyChange }) => {
   const [selectedMint, setSelectedMint] = useState<Mint | null>(mints[0] ?? null);
   const [amount, setAmount] = useState('');
   const [lnStep, setLnStep] = useState<LnStep>('amount');
@@ -250,6 +264,8 @@ const LightningTab: React.FC<{
   const stopPollingRef = useRef<(() => void) | undefined>();
   const mountedRef = useRef(true);
   const busyRef = useRef(false);
+
+  useEffect(() => { onBusyChange?.(lnStep === 'invoice' || lnStep === 'waiting'); }, [lnStep, onBusyChange]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -342,7 +358,8 @@ const LightningTab: React.FC<{
       await navigator.clipboard.writeText(invoice);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch {
+    } catch (err) {
+      console.warn('[nutsd] Clipboard write failed:', err);
       toastError('Copy failed', new Error('Clipboard access denied'));
     }
   };

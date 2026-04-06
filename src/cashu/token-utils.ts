@@ -63,7 +63,9 @@ export function extractMintUrl(encodedToken: string): string | null {
       const json = JSON.parse(atob(trimmed.slice(6)));
       // V3 format: { token: [{ mint: "...", proofs: [...] }] }
       if (json.token?.[0]?.mint) return json.token[0].mint;
-    } catch { /* fall through */ }
+    } catch {
+      // Expected: parse failure for non-V3 token input or malformed base64
+    }
   }
 
   // V4 token (cashuB): base64url-encoded CBOR
@@ -80,7 +82,9 @@ export function extractMintUrl(encodedToken: string): string | null {
 
       const url = readCborMintUrl(bytes);
       if (url) return url;
-    } catch { /* fall through */ }
+    } catch {
+      // Expected: CBOR decode failure for non-V4 token input
+    }
   }
 
   return null;
@@ -121,6 +125,7 @@ export function isP2pkLockedToken(encodedToken: string): boolean {
     const decoded = getDecodedToken(encodedToken);
     return decoded.proofs.some(isP2pkLockedProof);
   } catch {
+    // Expected: decode failure for non-token or unsupported format
     return false;
   }
 }
@@ -137,6 +142,7 @@ export function isP2pkLockedProof(proof: Proof): boolean {
     const parsed = JSON.parse(proof.secret);
     return Array.isArray(parsed) && parsed[0] === 'P2PK';
   } catch {
+    // Expected: non-JSON secret means this is a standard (non-P2PK) proof
     return false;
   }
 }
@@ -152,7 +158,9 @@ export function extractP2pkPubkey(proof: Proof): string | null {
     if (Array.isArray(parsed) && parsed[0] === 'P2PK' && parsed[1]?.data) {
       return parsed[1].data;
     }
-  } catch { /* not P2PK */ }
+  } catch {
+    // Expected: non-JSON secret means this is not a P2PK proof
+  }
   return null;
 }
 

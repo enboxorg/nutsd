@@ -73,6 +73,7 @@ function WalletHome() {
     mintFeePpk,
     keysetFeeMap,
     pendingProofCount,
+    mintHealth,
     p2pkKey,
     loading,
     reconciling,
@@ -117,6 +118,7 @@ function WalletHome() {
   const [showSettings, setShowSettings] = useState(false);
   const [showPayRequest, setShowPayRequest] = useState<string | null>(null);
   const [showCreateRequest, setShowCreateRequest] = useState(false);
+  const [trustBusy, setTrustBusy] = useState(false);
   const [trustMintState, setTrustMintState] = useState<{
     mintUrl: string;
     amount: number;
@@ -225,10 +227,12 @@ function WalletHome() {
     let releaseLock: (() => void) | undefined;
     try {
       releaseLock = await acquireWalletLock('trust-claim');
-    } catch {
+    } catch (err) {
+      console.warn('[nutsd] Wallet lock acquisition failed for trust-claim:', err);
       toastError('Wallet busy', new Error('Another wallet operation is in progress.'));
       return;
     }
+    setTrustBusy(true);
     try {
       // Add the mint
       const newMint = await addMint({ url: trustMintState.mintUrl, unit: trustMintState.unit, active: true });
@@ -249,6 +253,7 @@ function WalletHome() {
     } catch (err) {
       toastError('Failed to receive', err);
     } finally {
+      setTrustBusy(false);
       releaseLock?.();
       setTrustMintState(null);
     }
@@ -260,10 +265,12 @@ function WalletHome() {
     let releaseLock: (() => void) | undefined;
     try {
       releaseLock = await acquireWalletLock('cross-mint-swap');
-    } catch {
+    } catch (err) {
+      console.warn('[nutsd] Wallet lock acquisition failed for cross-mint-swap:', err);
       toastError('Wallet busy', new Error('Another wallet operation is in progress.'));
       return;
     }
+    setTrustBusy(true);
     try {
       // Receive the token at the foreign mint using a TRANSIENT wallet.
       // We do NOT add the foreign mint to the DWN — that's the whole point of
@@ -303,6 +310,7 @@ function WalletHome() {
             'Lightning payment sent. Waiting for trusted mint to detect payment. ' +
             'The swap will resume automatically on next startup.'
           ));
+          setTrustBusy(false);
           setTrustMintState(null);
           return;
         }
@@ -330,6 +338,7 @@ function WalletHome() {
     } catch (err) {
       toastError('Swap failed', err);
     } finally {
+      setTrustBusy(false);
       releaseLock?.();
       setTrustMintState(null);
     }
@@ -370,6 +379,7 @@ function WalletHome() {
                 const parsed = parseToken(detected.value);
                 handleUnknownMint(mintUrl, parsed.amount, parsed.unit ?? 'sat', detected.value);
               } catch {
+                // Expected: V4 token or unparseable — show with unknown amount in trust dialog
                 handleUnknownMint(mintUrl, 0, 'sat', detected.value);
               }
               return; // Trust dialog handles the rest
@@ -649,6 +659,7 @@ function WalletHome() {
             <MintListCard
               mints={mints}
               mintBalances={mintBalances}
+              mintHealth={mintHealth}
               onAddMint={() => setShowAddMint(true)}
               onSelectMint={setSelectedMint}
             />
@@ -775,9 +786,10 @@ function WalletHome() {
           unit={trustMintState.unit}
           defaultMint={orderedMints[0]}
           mints={orderedMints}
+          busy={trustBusy}
           onTrustAndClaim={handleTrustAndClaim}
           onSwapToMint={handleSwapToMint}
-          onCancel={() => setTrustMintState(null)}
+          onCancel={() => { if (!trustBusy) setTrustMintState(null); }}
         />
       )}
       {showPayRequest && (

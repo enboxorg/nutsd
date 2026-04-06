@@ -107,7 +107,8 @@ export async function recoverStashes(deps: RecoveryDeps): Promise<RecoveryResult
         await deps.writeProof(mintContextId, proof);
         recovered++;
         existingSecrets.add(proof.secret); // prevent re-write within same stash
-      } catch {
+      } catch (err) {
+        console.warn('[nutsd:financial] Failed to write proof during stash recovery:', err);
         failed++;
       }
     }
@@ -122,7 +123,8 @@ export async function recoverStashes(deps: RecoveryDeps): Promise<RecoveryResult
       try {
         await stash.delete();
         result.stashesCompleted++;
-      } catch {
+      } catch (err) {
+        console.warn('[nutsd:financial] Failed to delete completed stash (will retry on next startup):', err);
         result.stashesRetained++;
       }
     }

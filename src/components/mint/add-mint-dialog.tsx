@@ -20,7 +20,9 @@ function extractSupportedUnits(info: MintInfo): string[] {
       }
       if (unitSet.size > 0) return Array.from(unitSet);
     }
-  } catch { /* fall back */ }
+  } catch {
+    // Expected: mint info may not have NUT-04 methods in expected format — fall back to 'sat'
+  }
   return ['sat'];
 }
 
