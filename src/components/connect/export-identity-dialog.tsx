@@ -4,6 +4,7 @@ import { DWebConnect, DEFAULT_WALLETS, showWalletSelector } from '@enbox/browser
 import { useEnbox } from '@/enbox';
 import { toastError } from '@/lib/utils';
 import { CashuWalletDefinition } from '@/protocol/cashu-wallet-protocol';
+import { CashuTransferDefinition } from '@/protocol/cashu-transfer-protocol';
 import { brand } from '@/lib/brand';
 
 interface ExportIdentityDialogProps {
@@ -57,7 +58,7 @@ export const ExportIdentityDialog: React.FC<ExportIdentityDialogProps> = ({ open
       // requests.
       setStatusMessage('Waiting for wallet approval...');
       const session = await auth.connect({
-        protocols      : [CashuWalletDefinition],
+        protocols      : [CashuWalletDefinition, CashuTransferDefinition],
         connectHandler : {
           async requestAccess({ permissionRequests }) {
             // Show the wallet selector modal.

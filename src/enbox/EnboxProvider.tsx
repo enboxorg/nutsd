@@ -3,9 +3,32 @@ import React, { createContext, useCallback, useEffect, useMemo, useRef, useState
 import { AuthManager, BrowserConnectHandler, Enbox } from '@enbox/browser';
 import type { AuthSession } from '@enbox/browser';
 import { CashuWalletDefinition } from '@/protocol/cashu-wallet-protocol';
+import { CashuTransferDefinition } from '@/protocol/cashu-transfer-protocol';
 import { brand } from '@/lib/brand';
 
 // Protocol is auto-configured via repository().configure() in use-wallet.ts
+
+/** All protocol definitions this dapp needs permissions for. */
+const DAPP_PROTOCOLS = [CashuWalletDefinition, CashuTransferDefinition];
+
+/**
+ * Get or create a random vault password and persist it in localStorage.
+ *
+ * For a dapp (not a wallet), the vault password protects the local DID's
+ * private keys at rest. A crypto-random password per browser is sufficient —
+ * if the user clears storage, they recover via their 12-word seed phrase.
+ */
+function getOrCreateVaultPassword(): string {
+  const STORAGE_KEY = 'enbox:vault-password';
+  let password = localStorage.getItem(STORAGE_KEY);
+  if (!password) {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    password = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+    localStorage.setItem(STORAGE_KEY, password);
+  }
+  return password;
+}
 
 // ---------------------------------------------------------------------------
 // Context shape
@@ -95,7 +118,8 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setIsConnecting(true);
       try {
         authRef.current = await AuthManager.create({
-          connectHandler: BrowserConnectHandler({
+          password       : getOrCreateVaultPassword(),
+          connectHandler : BrowserConnectHandler({
             wallets : walletOptions,
             appName : brand.name,
             appIcon : `${window.location.origin}/favicon.ico`,
@@ -144,7 +168,7 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setIsConnecting(true);
     try {
       const session = await auth.connect({
-        protocols: [CashuWalletDefinition],
+        protocols: DAPP_PROTOCOLS,
       });
       applySession(session);
     } finally {
