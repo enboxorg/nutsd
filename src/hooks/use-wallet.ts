@@ -399,6 +399,28 @@ export function useWallet() {
     return map;
   }, [keysets]);
 
+  /** Per-unit balance totals across all mints. */
+  const unitBalances = useMemo(() => {
+    const balances = new Map<string, number>();
+    for (const proof of proofs) {
+      if (proof.state !== 'unspent') continue;
+      const mint = mints.find(m => m.contextId === proof.mintContextId);
+      const unit = mint?.unit ?? 'sat';
+      balances.set(unit, (balances.get(unit) ?? 0) + proof.amount);
+    }
+    return balances;
+  }, [mints, proofs]);
+
+  /** Number of unspent proofs per mint URL. */
+  const proofCountByMint = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const proof of proofs) {
+      if (proof.state !== 'unspent') continue;
+      counts.set(proof.mintUrl, (counts.get(proof.mintUrl) ?? 0) + 1);
+    }
+    return counts;
+  }, [proofs]);
+
   /** Number of pending proofs (for UI indicators). */
   const pendingProofCount = useMemo(
     () => proofs.filter(p => p.state === 'pending').length,
@@ -850,6 +872,8 @@ export function useWallet() {
     reconciling,
     totalBalance,
     mintBalances,
+    unitBalances,
+    proofCountByMint,
     mintFeePpk,
     keysetFeeMap,
     pendingProofCount,
