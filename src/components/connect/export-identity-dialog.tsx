@@ -1,16 +1,6 @@
 import { useState } from 'react';
 import { AlertTriangleIcon, ArrowRightIcon, Loader2Icon, XIcon, CheckCircleIcon } from 'lucide-react';
-import { DWebConnect, DEFAULT_WALLETS } from '@enbox/browser';
-// showWalletSelector exported from @enbox/browser >= 0.3.1 (enbox#858).
-// Use a dynamic import so this compiles against 0.3.0 too.
-const loadWalletSelector = async (): Promise<(wallets: any[]) => Promise<string>> => {
-  try {
-    const mod = await import('@enbox/browser') as any;
-    if (typeof mod.showWalletSelector === 'function') { return mod.showWalletSelector; }
-  } catch { /* not available */ }
-  // Fallback: use the preferred wallet URL directly.
-  return async () => brand.preferredWalletUrl;
-};
+import { DWebConnect, DEFAULT_WALLETS, showWalletSelector } from '@enbox/browser';
 import { useEnbox } from '@/enbox';
 import { toastError } from '@/lib/utils';
 import { CashuWalletDefinition } from '@/protocol/cashu-wallet-protocol';
@@ -70,19 +60,16 @@ export const ExportIdentityDialog: React.FC<ExportIdentityDialogProps> = ({ open
         protocols      : [CashuWalletDefinition],
         connectHandler : {
           async requestAccess({ permissionRequests }) {
-            // Show the wallet selector modal (or fallback to preferred URL).
-            const selectWallet = await loadWalletSelector();
-            const walletUrl = await selectWallet(DEFAULT_WALLETS);
+            // Show the wallet selector modal.
+            const walletUrl = await showWalletSelector(DEFAULT_WALLETS);
 
             // Run DWebConnect with portableIdentity included.
-            // Cast to `any` for the portableIdentity field — the correct
-            // PortableIdentity type is available in @enbox/browser >= 0.3.1.
             return DWebConnect.initClient({
               walletUrl,
               permissionRequests,
               appName          : brand.name,
               appIcon          : `${window.location.origin}/favicon.ico`,
-              portableIdentity : portable as any,
+              portableIdentity : portable,
             });
           },
         },
