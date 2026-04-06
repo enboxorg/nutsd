@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 
 import { ThemeProvider, useTheme } from '@/components/theme-provider';
 import { ErrorBoundary } from '@/components/error-boundary';
@@ -18,9 +18,12 @@ import { WithdrawDialog } from '@/components/wallet/withdraw-dialog';
 import { SendDialog } from '@/components/wallet/send-dialog';
 import { SendToDIDDialog } from '@/components/wallet/send-to-did-dialog';
 import { ReceiveDialog } from '@/components/wallet/receive-dialog';
+import { TrustMintDialog } from '@/components/wallet/trust-mint-dialog';
+import type { CrossMintSwapEstimate } from '@/cashu/cross-mint-swap';
 import { RecoveryPhraseDialog } from '@/components/connect/recovery-phrase-dialog';
 import { LnurlWithdrawDialog } from '@/components/wallet/lnurl-withdraw-dialog';
 import { TransactionHistory } from '@/components/wallet/transaction-history';
+import { SettingsPage } from '@/components/wallet/settings-page';
 import { Toaster } from 'sonner';
 
 import { QrScanner } from '@/components/wallet/qr-scanner';
@@ -30,7 +33,7 @@ import { receiveToken, getMintInfo } from '@/cashu/wallet-ops';
 import { extractMintUrl } from '@/cashu/token-utils';
 import { acquireWalletLock } from '@/lib/wallet-mutex';
 
-import { toastError, toastSuccess, formatAmount } from '@/lib/utils';
+import { toastError, toastSuccess, formatAmount, truncateMintUrl } from '@/lib/utils';
 import { truncateMiddle } from '@/lib/utils';
 import { checkTokenSpent } from '@/cashu/wallet-ops';
 import { brand } from '@/lib/brand';
@@ -46,6 +49,7 @@ import {
   CopyIcon,
   UsersIcon,
   DownloadIcon,
+  SettingsIcon,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -77,10 +81,20 @@ function WalletHome() {
     markProofsPending,
     revertProofsToUnspent,
     safeStoreReceivedProofs,
+    preferences,
+    updatePreferences,
     incomingTransfers,
     checkIncomingTransfers,
     redeemIncomingTransfer,
   } = useWallet();
+
+  // Ordered mints: default mint first (for dialog selectors)
+  const orderedMints = useMemo(() => {
+    if (!preferences.defaultMintUrl) return mints;
+    const idx = mints.findIndex(m => m.url === preferences.defaultMintUrl);
+    if (idx <= 0) return mints;
+    return [mints[idx], ...mints.slice(0, idx), ...mints.slice(idx + 1)];
+  }, [mints, preferences.defaultMintUrl]);
 
   // Dialog state
   const [showAddMint, setShowAddMint] = useState(false);
@@ -93,6 +107,13 @@ function WalletHome() {
   const [showLnurlPay, setShowLnurlPay] = useState<{ target: string; type: 'lightning-address' | 'lnurl' } | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [showSendToDid, setShowSendToDid] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [trustMintState, setTrustMintState] = useState<{
+    mintUrl: string;
+    amount: number;
+    unit: string;
+    token: string;
+  } | null>(null);
 
   const hasMints = mints.length > 0;
 
@@ -183,6 +204,79 @@ function WalletHome() {
     await addMint(data);
   }, [addMint]);
 
+  /** Called when the receive flow encounters a token from an unknown mint. */
+  const handleUnknownMint = useCallback((mintUrl: string, amount: number, unit: string, token: string) => {
+    setShowReceive(false); // Close receive dialog
+    setTrustMintState({ mintUrl, amount, unit, token });
+  }, []);
+
+  /** Trust the unknown mint, add it, and claim the token. */
+  const handleTrustAndClaim = useCallback(async () => {
+    if (!trustMintState) return;
+    const releaseLock = await acquireWalletLock('trust-claim').catch(() => null);
+    if (!releaseLock) { toastError('Wallet busy', new Error('Another wallet operation is in progress.')); return; }
+    try {
+      // Add the mint
+      const newMint = await addMint({ url: trustMintState.mintUrl, unit: trustMintState.unit, active: true });
+      if (!newMint) throw new Error('Failed to add mint');
+
+      // Now receive the token
+      const newProofs = await receiveToken(trustMintState.mintUrl, trustMintState.token, trustMintState.unit);
+      const total = newProofs.reduce((s, p) => s + p.amount, 0);
+      await storeNewProofs(newMint.contextId, newProofs);
+      await recordTransaction({
+        type    : 'receive',
+        amount  : total,
+        unit    : trustMintState.unit,
+        mintUrl : trustMintState.mintUrl,
+        status  : 'completed',
+      });
+      toastSuccess('Token received', `+${total} ${trustMintState.unit}`);
+    } catch (err) {
+      toastError('Failed to receive', err);
+    } finally {
+      releaseLock();
+      setTrustMintState(null);
+    }
+  }, [trustMintState, addMint, storeNewProofs, recordTransaction]);
+
+  /** Swap the token from the unknown mint to a trusted mint via Lightning. */
+  const handleSwapToMint = useCallback(async (estimate: CrossMintSwapEstimate, targetMint: Mint) => {
+    if (!trustMintState) return;
+    const releaseLock = await acquireWalletLock('cross-mint-swap').catch(() => null);
+    if (!releaseLock) { toastError('Wallet busy', new Error('Another wallet operation is in progress.')); return; }
+    try {
+      // First receive the token at the foreign mint (need proofs to melt)
+      const tempMint = await addMint({ url: trustMintState.mintUrl, unit: trustMintState.unit, active: true });
+      if (!tempMint) throw new Error('Failed to connect to source mint');
+
+      const foreignProofs = await receiveToken(trustMintState.mintUrl, trustMintState.token, trustMintState.unit);
+
+      // Execute cross-mint swap
+      const { executeCrossMintSwap } = await import('@/cashu/cross-mint-swap');
+      const result = await executeCrossMintSwap(
+        trustMintState.mintUrl, targetMint.url, foreignProofs, estimate, trustMintState.unit,
+      );
+
+      // Store new proofs at trusted mint
+      await storeNewProofs(targetMint.contextId, result.proofs);
+      await recordTransaction({
+        type    : 'receive',
+        amount  : result.amount,
+        unit    : trustMintState.unit,
+        mintUrl : targetMint.url,
+        status  : 'completed',
+        memo    : `Cross-mint swap from ${trustMintState.mintUrl}`,
+      });
+      toastSuccess('Token swapped', `+${result.amount} ${trustMintState.unit} at ${truncateMintUrl(targetMint.url)}`);
+    } catch (err) {
+      toastError('Swap failed', err);
+    } finally {
+      releaseLock();
+      setTrustMintState(null);
+    }
+  }, [trustMintState, addMint, storeNewProofs, recordTransaction]);
+
   /** Check if a sent token has been claimed by the recipient (NUT-07). */
   const handleCheckTokenSpent = useCallback(async (tx: Transaction): Promise<boolean | null> => {
     if (!tx.cashuToken) return null;
@@ -210,26 +304,31 @@ function WalletHome() {
             const mintUrl = extractMintUrl(detected.value);
             if (!mintUrl) throw new Error('Could not determine mint URL from token');
 
-            // Ensure mint is reachable BEFORE redeeming
-            let knownMint = mints.find(m => m.url === mintUrl);
+            // Check if the mint is known. If not, show the trust dialog.
+            const knownMint = mints.find(m => m.url === mintUrl);
             if (!knownMint) {
-              await getMintInfo(mintUrl); // throws if unreachable
-              await storeNewProofsForMintUrl('', [], mintUrl); // auto-add
-              knownMint = mints.find(m => m.url === mintUrl);
+              const { parseToken } = await import('@/cashu/token-utils');
+              try {
+                const parsed = parseToken(detected.value);
+                handleUnknownMint(mintUrl, parsed.amount, parsed.unit ?? 'sat', detected.value);
+              } catch {
+                handleUnknownMint(mintUrl, 0, 'sat', detected.value);
+              }
+              return; // Trust dialog handles the rest
             }
 
             const newProofs = await receiveToken(mintUrl, detected.value);
             const totalReceived = newProofs.reduce((s, p) => s + p.amount, 0);
-            const contextId = knownMint?.contextId ?? '';
+            const contextId = knownMint.contextId;
             await storeNewProofsForMintUrl(contextId, newProofs, mintUrl);
             await recordTransaction({
               type   : 'receive',
               amount : totalReceived,
-              unit   : knownMint?.unit ?? 'sat',
+              unit   : knownMint.unit ?? 'sat',
               mintUrl,
               status : 'completed',
             });
-            toastSuccess('Token received', `+${totalReceived} ${knownMint?.unit ?? 'sat'}`);
+            toastSuccess('Token received', `+${totalReceived} ${knownMint.unit ?? 'sat'}`);
           } catch (err) {
             toastError('Failed to receive token', err);
           } finally {
@@ -255,7 +354,7 @@ function WalletHome() {
         ));
         break;
     }
-  }, [mints, storeNewProofsForMintUrl, recordTransaction]);
+  }, [mints, handleUnknownMint, storeNewProofsForMintUrl, recordTransaction]);
 
   /** Reclaim an unclaimed sent token (NUT-07 reports all proofs UNSPENT). */
   const handleReclaimToken = useCallback(async (tx: Transaction) => {
@@ -344,6 +443,13 @@ function WalletHome() {
               title="Toggle theme"
             >
               {theme === 'dark' ? <SunIcon className="h-4 w-4" /> : <MoonIcon className="h-4 w-4" />}
+            </button>
+            <button
+              onClick={() => setShowSettings(true)}
+              className="p-2 rounded-lg hover:bg-muted transition-colors text-muted-foreground"
+              title="Settings"
+            >
+              <SettingsIcon className="h-4 w-4" />
             </button>
             <button
               onClick={handleDisconnect}
@@ -486,7 +592,7 @@ function WalletHome() {
       )}
       {showDeposit && hasMints && (
         <DepositDialog
-          mints={mints}
+          mints={orderedMints}
           onClose={() => setShowDeposit(false)}
           onProofsReceived={storeNewProofs}
           onTransactionCreated={recordTransaction}
@@ -494,7 +600,7 @@ function WalletHome() {
       )}
       {showWithdraw && hasMints && (
         <WithdrawDialog
-          mints={mints}
+          mints={orderedMints}
           mintBalances={mintBalances}
           getUnspentProofs={getUnspentProofsForMint}
           keysetFeeMap={keysetFeeMap}
@@ -508,7 +614,7 @@ function WalletHome() {
       )}
       {showSend && hasMints && (
         <SendDialog
-          mints={mints}
+          mints={orderedMints}
           mintBalances={mintBalances}
           getUnspentProofs={getUnspentProofsForMint}
           keysetFeeMap={keysetFeeMap}
@@ -522,7 +628,7 @@ function WalletHome() {
       )}
       {showSendToDid && hasMints && p2pkKey && did && (
         <SendToDIDDialog
-          mints={mints}
+          mints={orderedMints}
           mintBalances={mintBalances}
           getUnspentProofs={getUnspentProofsForMint}
           senderDid={did}
@@ -538,6 +644,7 @@ function WalletHome() {
         <ReceiveDialog
           mints={mints}
           p2pkPrivateKey={p2pkKey?.privateKey}
+          onUnknownMint={handleUnknownMint}
           onClose={() => setShowReceive(false)}
           onProofsReceived={storeNewProofsForMintUrl}
           onTransactionCreated={recordTransaction}
@@ -553,7 +660,7 @@ function WalletHome() {
         <LnurlWithdrawDialog
           target={showLnurlPay.target}
           targetType={showLnurlPay.type}
-          mints={mints}
+          mints={orderedMints}
           mintBalances={mintBalances}
           getUnspentProofs={getUnspentProofsForMint}
           keysetFeeMap={keysetFeeMap}
@@ -569,6 +676,28 @@ function WalletHome() {
           transactions={transactions}
           mints={mints}
           onClose={() => setShowHistory(false)}
+        />
+      )}
+      {showSettings && (
+        <SettingsPage
+          did={did}
+          mints={mints}
+          preferences={preferences}
+          p2pkKey={p2pkKey}
+          onUpdatePreferences={updatePreferences}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
+      {trustMintState && (
+        <TrustMintDialog
+          mintUrl={trustMintState.mintUrl}
+          amount={trustMintState.amount}
+          unit={trustMintState.unit}
+          defaultMint={orderedMints[0]}
+          mints={orderedMints}
+          onTrustAndClaim={handleTrustAndClaim}
+          onSwapToMint={handleSwapToMint}
+          onCancel={() => setTrustMintState(null)}
         />
       )}
     </div>

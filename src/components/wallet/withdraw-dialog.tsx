@@ -2,6 +2,7 @@ import { useState, useRef } from 'react';
 import { Loader2Icon, XIcon, ArrowUpIcon } from 'lucide-react';
 import { toastError, toastSuccess, truncateMintUrl, formatAmount } from '@/lib/utils';
 import { createMeltQuote, meltTokens, estimateInputFee } from '@/cashu/wallet-ops';
+import { decodeInvoice, formatInvoiceAmount, formatTimeRemaining } from '@/cashu/invoice-decode';
 import { acquireWalletLock, isUnloading } from '@/lib/wallet-mutex';
 import type { Mint, StoredProof } from '@/hooks/use-wallet';
 import type { Proof } from '@cashu/cashu-ts';
@@ -49,10 +50,22 @@ export const WithdrawDialog: React.FC<WithdrawDialogProps> = ({
   const [errorMsg, setErrorMsg] = useState('');
   const quoteRef = useRef<MeltQuoteBolt11Response | null>(null);
   const [loading, setLoading] = useState(false);
+  const [decodedInvoice, setDecodedInvoice] = useState<ReturnType<typeof decodeInvoice> | null>(null);
   const busyRef = useRef(false);
   const pendingIdsRef = useRef<string[]>([]);
 
   const balance = selectedMint ? (mintBalances.get(selectedMint.url) ?? 0) : 0;
+
+  const handleInvoiceChange = (val: string) => {
+    setInvoice(val);
+    try {
+      if (val.trim().toLowerCase().startsWith('lnbc') || val.trim().toLowerCase().startsWith('lntb') || val.trim().toLowerCase().startsWith('lnbs')) {
+        setDecodedInvoice(decodeInvoice(val.trim()));
+      } else {
+        setDecodedInvoice(null);
+      }
+    } catch { setDecodedInvoice(null); }
+  };
 
   const handleGetQuote = async () => {
     if (!selectedMint || !invoice.trim() || busyRef.current) return;
@@ -203,12 +216,20 @@ export const WithdrawDialog: React.FC<WithdrawDialogProps> = ({
               <label className="text-xs text-muted-foreground">Lightning Invoice</label>
               <textarea
                 value={invoice}
-                onChange={(e) => setInvoice(e.target.value)}
+                onChange={(e) => handleInvoiceChange(e.target.value)}
                 placeholder="lnbc..."
                 rows={3}
                 className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm font-mono text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 resize-none"
                 autoFocus
               />
+              {decodedInvoice && decodedInvoice.amountSats !== null && (
+                <div className="flex items-center justify-between text-xs text-muted-foreground px-1">
+                  <span>Amount: <strong className="text-foreground">{formatInvoiceAmount(decodedInvoice)}</strong></span>
+                  {decodedInvoice.isExpired
+                    ? <span className="text-destructive">Expired</span>
+                    : <span>Expires in {formatTimeRemaining(decodedInvoice.secondsRemaining)}</span>}
+                </div>
+              )}
             </div>
 
             <button
