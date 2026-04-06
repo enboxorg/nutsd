@@ -20,6 +20,8 @@ interface EnboxContextProps {
   isConnecting: boolean;
   /** Whether a session is active. */
   isConnected: boolean;
+  /** Whether the session is delegate-based (wallet-connected) vs local-only. */
+  isDelegateSession: boolean;
   /** The underlying AuthManager (for advanced flows like QR connect). */
   auth: AuthManager | null;
   /**
@@ -41,6 +43,7 @@ interface EnboxContextProps {
 export const EnboxContext = createContext<EnboxContextProps>({
   isConnecting        : false,
   isConnected         : false,
+  isDelegateSession   : false,
   auth                : null,
   connectLocal        : () => Promise.reject(new Error('EnboxProvider not mounted')),
   connectWallet       : () => Promise.reject(new Error('EnboxProvider not mounted')),
@@ -57,6 +60,7 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const authRef = useRef<AuthManager | null>(null);
   const [enbox, setEnbox] = useState<Enbox | undefined>();
   const [did, setDid] = useState<string | undefined>();
+  const [isDelegateSession, setIsDelegateSession] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [recoveryPhrase, setRecoveryPhrase] = useState<string | undefined>();
 
@@ -77,6 +81,7 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const api = Enbox.connect({ session });
     setEnbox(api);
     setDid(session.did);
+    setIsDelegateSession(!!session.delegateDid);
     if (session.recoveryPhrase) {
       setRecoveryPhrase(session.recoveryPhrase);
     }
@@ -175,6 +180,7 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         did,
         isConnecting,
         isConnected,
+        isDelegateSession,
         auth                : authRef.current,
         connectLocal,
         connectWallet,
