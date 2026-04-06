@@ -4,6 +4,7 @@ import { toastError, toastSuccess, truncateMintUrl } from '@/lib/utils';
 import { createMintQuote, checkMintQuote, mintTokens } from '@/cashu/wallet-ops';
 import { subscribeToQuote } from '@/lib/mint-ws';
 import { QRCodeDisplay } from '@/components/qr-code';
+import { DialogWrapper } from '@/components/ui/dialog-wrapper';
 import type { Mint } from '@/hooks/use-wallet';
 import type { Proof } from '@cashu/cashu-ts';
 import type { TransactionData } from '@/protocol/cashu-wallet-protocol';
@@ -184,14 +185,15 @@ export const DepositDialog: React.FC<DepositDialogProps> = ({
       await navigator.clipboard.writeText(invoice);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch {
+    } catch (err) {
+      console.warn('[nutsd] Clipboard write failed:', err);
       toastError('Copy failed', new Error('Clipboard access denied'));
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-card border border-border p-6 rounded-xl shadow-xl max-w-sm w-full space-y-4">
+    <DialogWrapper open={true} onClose={onClose}>
+      <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <ZapIcon className="h-5 w-5 text-[var(--color-success)]" />
@@ -279,15 +281,23 @@ export const DepositDialog: React.FC<DepositDialogProps> = ({
             <div className="text-4xl text-destructive">!</div>
             <p className="text-sm font-medium text-destructive">Minting failed</p>
             <p className="text-xs text-muted-foreground text-center">{errorMsg}</p>
-            <button
-              onClick={onClose}
-              className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity"
-            >
-              Close
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={() => { setStep('amount'); setErrorMsg(''); }}
+                className="px-4 py-2 rounded-lg border border-border text-sm hover:bg-muted"
+              >
+                Try Again
+              </button>
+              <button
+                onClick={onClose}
+                className="px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity"
+              >
+                Close
+              </button>
+            </div>
           </div>
         )}
       </div>
-    </div>
+    </DialogWrapper>
   );
 };

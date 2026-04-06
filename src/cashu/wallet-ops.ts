@@ -46,6 +46,20 @@ export function clearWalletCache(): void {
   walletCache.clear();
 }
 
+/** Evict a specific mint from the wallet cache (e.g. on keyset rotation). */
+export function evictWalletCache(mintUrl: string, unit?: string): void {
+  if (unit) {
+    walletCache.delete(`${mintUrl}:${unit}`);
+  } else {
+    // Evict all units for this URL
+    for (const key of walletCache.keys()) {
+      if (key.startsWith(`${mintUrl}:`)) {
+        walletCache.delete(key);
+      }
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Mint tokens (deposit via Lightning)
 // ---------------------------------------------------------------------------
@@ -192,7 +206,8 @@ export async function checkTokenSpent(
     const states = await wallet.checkProofsStates(token.proofs);
     // All proofs spent = token fully claimed
     return states.every((s) => s.state === 'SPENT');
-  } catch {
+  } catch (err) {
+    console.warn('[nutsd:financial] checkTokenSpent failed:', err);
     return null;
   }
 }
@@ -232,7 +247,8 @@ export async function isTokenSpendable(
     const token = wallet.decodeToken(encodedToken);
     const states = await wallet.checkProofsStates(token.proofs);
     return states.every((s) => s.state === 'UNSPENT');
-  } catch {
+  } catch (err) {
+    console.warn('[nutsd:financial] isTokenSpendable check failed:', err);
     return null; // can't determine — proceed with receive attempt
   }
 }

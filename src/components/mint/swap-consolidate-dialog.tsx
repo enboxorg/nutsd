@@ -45,7 +45,8 @@ export const SwapConsolidateDialog: React.FC<SwapConsolidateDialogProps> = ({
     let releaseLock: (() => void) | undefined;
     try {
       releaseLock = await acquireWalletLock('consolidate');
-    } catch {
+    } catch (err) {
+      console.warn('[nutsd] Wallet lock acquisition failed for consolidate:', err);
       toastError('Wallet busy', new Error('Another wallet operation is in progress. Please wait.'));
       setLoading(false);
       return;

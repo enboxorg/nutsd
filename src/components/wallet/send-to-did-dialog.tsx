@@ -5,6 +5,7 @@ import { sendP2pkLocked, isValidP2pkPublicKey } from '@/cashu/p2pk';
 import { encodeToken } from '@/cashu/token-utils';
 import { acquireWalletLock } from '@/lib/wallet-mutex';
 import { CashuTransferProtocol, assertP2PKLocked, type TransferData } from '@/protocol/cashu-transfer-protocol';
+import { DialogWrapper } from '@/components/ui/dialog-wrapper';
 import type { Mint, StoredProof } from '@/hooks/use-wallet';
 import type { Proof } from '@cashu/cashu-ts';
 import type { TransactionData } from '@/protocol/cashu-wallet-protocol';
@@ -72,7 +73,8 @@ export const SendToDIDDialog: React.FC<SendToDIDDialogProps> = ({
     let releaseLock: (() => void) | undefined;
     try {
       releaseLock = await acquireWalletLock('p2p-send');
-    } catch {
+    } catch (err) {
+      console.warn('[nutsd] Wallet lock acquisition failed for p2p-send:', err);
       toastError('Wallet busy', new Error('Another wallet operation is in progress. Please wait.'));
       setStep('amount');
       setLoading(false);
@@ -166,8 +168,8 @@ export const SendToDIDDialog: React.FC<SendToDIDDialogProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-card border border-border p-6 rounded-xl shadow-xl max-w-sm w-full space-y-4">
+    <DialogWrapper open={true} onClose={onClose}>
+      <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <UsersIcon className="h-5 w-5 text-primary" />
@@ -322,6 +324,6 @@ export const SendToDIDDialog: React.FC<SendToDIDDialogProps> = ({
           </div>
         )}
       </div>
-    </div>
+    </DialogWrapper>
   );
 };

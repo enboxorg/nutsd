@@ -108,6 +108,7 @@ function isMintUrl(str: string): boolean {
     const url = new URL(str.startsWith('http') ? str : `https://${str}`);
     return url.protocol === 'https:' || url.protocol === 'http:';
   } catch {
+    // Expected: invalid URL string — not a mint URL
     return false;
   }
 }

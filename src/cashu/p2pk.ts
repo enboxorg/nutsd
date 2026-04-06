@@ -58,6 +58,7 @@ export function isValidP2pkPublicKey(hex: string): boolean {
     secp256k1.ProjectivePoint.fromHex(hex);
     return true;
   } catch {
+    // Expected: invalid hex or point not on curve
     return false;
   }
 }

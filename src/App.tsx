@@ -73,6 +73,7 @@ function WalletHome() {
     mintFeePpk,
     keysetFeeMap,
     pendingProofCount,
+    mintHealth,
     p2pkKey,
     loading,
     reconciling,
@@ -225,7 +226,8 @@ function WalletHome() {
     let releaseLock: (() => void) | undefined;
     try {
       releaseLock = await acquireWalletLock('trust-claim');
-    } catch {
+    } catch (err) {
+      console.warn('[nutsd] Wallet lock acquisition failed for trust-claim:', err);
       toastError('Wallet busy', new Error('Another wallet operation is in progress.'));
       return;
     }
@@ -260,7 +262,8 @@ function WalletHome() {
     let releaseLock: (() => void) | undefined;
     try {
       releaseLock = await acquireWalletLock('cross-mint-swap');
-    } catch {
+    } catch (err) {
+      console.warn('[nutsd] Wallet lock acquisition failed for cross-mint-swap:', err);
       toastError('Wallet busy', new Error('Another wallet operation is in progress.'));
       return;
     }
@@ -370,6 +373,7 @@ function WalletHome() {
                 const parsed = parseToken(detected.value);
                 handleUnknownMint(mintUrl, parsed.amount, parsed.unit ?? 'sat', detected.value);
               } catch {
+                // Expected: V4 token or unparseable — show with unknown amount in trust dialog
                 handleUnknownMint(mintUrl, 0, 'sat', detected.value);
               }
               return; // Trust dialog handles the rest
@@ -649,6 +653,7 @@ function WalletHome() {
             <MintListCard
               mints={mints}
               mintBalances={mintBalances}
+              mintHealth={mintHealth}
               onAddMint={() => setShowAddMint(true)}
               onSelectMint={setSelectedMint}
             />

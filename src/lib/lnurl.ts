@@ -155,8 +155,9 @@ async function fetchLnurlPay(url: string): Promise<LnurlPayResponse> {
         result.avatarUrl = `data:${mime.split(';')[0]};base64,${content}`;
       }
     }
-  } catch {
-    // Metadata parsing failed — not critical
+  } catch (err) {
+    // Metadata parsing failed — not critical, display will lack name/avatar
+    console.warn('[nutsd] LNURL metadata parsing failed:', err);
   }
 
   return result;

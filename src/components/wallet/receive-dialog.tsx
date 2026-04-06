@@ -7,6 +7,7 @@ import { subscribeToQuote } from '@/lib/mint-ws';
 import { extractMintUrl, isCashuToken, isP2pkLockedToken, parseToken } from '@/cashu/token-utils';
 import { receiveP2pkLocked } from '@/cashu/p2pk';
 import { QRCodeDisplay } from '@/components/qr-code';
+import { DialogWrapper } from '@/components/ui/dialog-wrapper';
 import type { Mint } from '@/hooks/use-wallet';
 import type { Proof } from '@cashu/cashu-ts';
 import type { TransactionData } from '@/protocol/cashu-wallet-protocol';
@@ -35,8 +36,8 @@ export const ReceiveDialog: React.FC<ReceiveDialogProps> = ({
   const [tab, setTab] = useState<Tab>('token');
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-card border border-border p-6 rounded-xl shadow-xl max-w-sm w-full space-y-4">
+    <DialogWrapper open={true} onClose={onClose}>
+      <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <DownloadIcon className="h-5 w-5 text-[var(--color-info)]" />
@@ -88,7 +89,7 @@ export const ReceiveDialog: React.FC<ReceiveDialogProps> = ({
           />
         )}
       </div>
-    </div>
+    </DialogWrapper>
   );
 };
 
@@ -342,7 +343,8 @@ const LightningTab: React.FC<{
       await navigator.clipboard.writeText(invoice);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch {
+    } catch (err) {
+      console.warn('[nutsd] Clipboard write failed:', err);
       toastError('Copy failed', new Error('Clipboard access denied'));
     }
   };

@@ -20,7 +20,8 @@ export const RecoveryPhraseDialog: React.FC<RecoveryPhraseDialogProps> = ({
       await navigator.clipboard.writeText(phrase);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch {
+    } catch (err) {
+      console.warn('[nutsd] Clipboard write failed, falling back to execCommand:', err);
       const textarea = document.createElement('textarea');
       textarea.value = phrase;
       document.body.appendChild(textarea);

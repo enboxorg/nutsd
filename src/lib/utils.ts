@@ -86,6 +86,7 @@ export function truncateMintUrl(url: string): string {
     if (host.length > 24) return truncateMiddle(host, 10, 10);
     return host;
   } catch {
+    // Expected: malformed URL string — fall back to simple truncation
     return truncateMiddle(url, 12, 8);
   }
 }

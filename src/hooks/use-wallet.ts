@@ -41,6 +41,9 @@ import type { TransferData } from '@/protocol/cashu-transfer-protocol';
 import {
   checkProofsState,
   getKeysetInfos,
+  getMintInfo,
+  clearWalletCache,
+  evictWalletCache,
   type KeysetInfo,
 } from '@/cashu/wallet-ops';
 import { generateP2pkKeyPair, receiveP2pkLocked, type P2pkKeyPair } from '@/cashu/p2pk';
@@ -136,6 +139,7 @@ export function useWallet() {
   const [loading, setLoading] = useState(false);
   const [reconciling, setReconciling] = useState(false);
   const [dwnError, setDwnError] = useState<string | null>(null);
+  const [mintHealth, setMintHealth] = useState<Map<string, boolean>>(new Map());
 
   // --- DWN record cache (for in-place updates) ---
   const proofRecordCache = useRef<Map<string, any>>(new Map());
@@ -175,6 +179,9 @@ export function useWallet() {
       setDwnError(null);
       proofRecordCache.current.clear();
       incomingTransferRecordsRef.current = [];
+      // Clear cashu-ts wallet cache — stale keyset data after disconnect
+      // would cause confusing errors on reconnect or mint key rotation.
+      clearWalletCache();
       // Reset startup recovery flag so reconnection triggers fresh recovery
       startupRecoveryDone.current = false;
     }
@@ -326,8 +333,9 @@ export function useWallet() {
         const data: PreferenceData = await record.data.json();
         setPreferences(data);
       }
-    } catch {
-      // No preferences set yet
+    } catch (err) {
+      // Expected: no preferences record exists yet on first launch
+      console.warn('[nutsd] Preferences not found or unreadable (expected on first launch):', err);
     }
   }, [repo]);
 
@@ -379,7 +387,9 @@ export function useWallet() {
         try {
           const data: TransferData = await record.data.json();
           transfers.push({ data, record });
-        } catch { /* skip unreadable records */ }
+        } catch (err) {
+            console.warn('[nutsd] Skipping unreadable incoming transfer record:', err);
+          }
       }
       incomingTransferRecordsRef.current = transfers;
       setIncomingTransfers(transfers.map(t => t.data));
@@ -467,6 +477,34 @@ export function useWallet() {
       refreshPreferences();
     };
   }, [refreshMints, refreshProofs, refreshKeysets, refreshTransactions, refreshPreferences]);
+
+  // =========================================================================
+  // Background mint health polling (every 2 minutes)
+  // =========================================================================
+
+  useEffect(() => {
+    if (mints.length === 0) return;
+
+    let cancelled = false;
+    const checkAll = async () => {
+      const health = new Map<string, boolean>();
+      for (const mint of mints) {
+        try {
+          await getMintInfo(mint.url, mint.unit);
+          health.set(mint.contextId, true);
+        } catch {
+          // Expected: mint is offline or unreachable — recorded as unhealthy
+          health.set(mint.contextId, false);
+        }
+      }
+      if (!cancelled) setMintHealth(health);
+    };
+
+    checkAll(); // immediate check
+    const interval = setInterval(checkAll, 120_000); // 2 minutes
+
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [mints]);
 
   // =========================================================================
   // Computed values
@@ -757,11 +795,15 @@ export function useWallet() {
       try {
         const { records: proofRecords } = await repo.mint.proof.query(mint.contextId);
         for (const r of proofRecords) await r.delete();
-      } catch { /* no proofs to delete */ }
+      } catch (err) {
+        console.warn('[nutsd] Failed to delete child proofs during mint removal (may have none):', err);
+      }
       try {
         const { records: keysetRecords } = await repo.mint.keyset.query(mint.contextId);
         for (const r of keysetRecords) await r.delete();
-      } catch { /* no keysets to delete */ }
+      } catch (err) {
+        console.warn('[nutsd] Failed to delete child keysets during mint removal (may have none):', err);
+      }
     }
     await repo.mint.delete(id);
     setMints(prev => prev.filter(m => m.id !== id));
@@ -858,6 +900,18 @@ export function useWallet() {
           inputFeePpk   : existing.data.inputFeePpk ?? 0,
         });
       }
+    }
+
+    // If any keysets were added or changed, evict the cashu-ts wallet cache
+    // for this mint so it re-loads with fresh keyset data on next use.
+    const hasNewOrChanged = newKeysets.some(nk => {
+      const existed = existingByKeysetId.has(nk.keysetId);
+      if (!existed) return true; // new keyset
+      const old = existingByKeysetId.get(nk.keysetId)!.data;
+      return old.active !== nk.active || old.inputFeePpk !== nk.inputFeePpk;
+    });
+    if (hasNewOrChanged) {
+      evictWalletCache(mint.url, mint.unit);
     }
 
     // Update local state (merge with existing keysets for other mints)
@@ -1023,9 +1077,9 @@ export function useWallet() {
     // STEP 3: All proofs written — delete the stash.
     try {
       await stashRecord.delete();
-    } catch {
+    } catch (err) {
       // Stash deletion failed — harmless. recoverProofStashes() cleans it up.
-      console.warn('[nutsd] Failed to delete proof stash (will clean up on next startup)');
+      console.warn('[nutsd:financial] Failed to delete proof stash (will clean up on next startup):', err);
     }
     return true; // All proofs durably persisted
   }, [repo, addProof]);
@@ -1057,7 +1111,9 @@ export function useWallet() {
           try {
             const data: ProofStashData = await record.data.json();
             stashes.push({ data, delete: () => record.delete() });
-          } catch { /* skip unreadable */ }
+          } catch (err) {
+              console.warn('[nutsd:financial] Skipping unreadable proof stash record:', err);
+            }
         }
         return stashes;
       },
@@ -1069,9 +1125,13 @@ export function useWallet() {
             try {
               const pd: ProofData = await pr.data.json();
               secrets.add(pd.secret);
-            } catch { /* skip */ }
+            } catch (err) {
+              console.warn('[nutsd:financial] Skipping unreadable proof during secret dedup:', err);
+            }
           }
-        } catch { /* no existing proofs */ }
+        } catch (err) {
+          console.warn('[nutsd:financial] No existing proofs for dedup (or query failed):', err);
+        }
         return secrets;
       },
       writeProof: async (mintContextId: string, proof: ProofData) => {
@@ -1083,7 +1143,9 @@ export function useWallet() {
           try {
             const newMint = await addMint({ url: mintUrl, unit, active: true });
             if (newMint) return newMint.contextId;
-          } catch { /* unreachable */ }
+          } catch (err) {
+            console.warn('[nutsd:financial] Mint unreachable during stash recovery:', err);
+          }
           return null;
         }
         return mint.contextId;
@@ -1117,7 +1179,10 @@ export function useWallet() {
           if (tx.status !== 'pending' || tx.type !== 'swap' || !tx.memo) continue;
 
           let swapState: PendingSwapState;
-          try { swapState = JSON.parse(tx.memo); } catch { continue; }
+          try { swapState = JSON.parse(tx.memo); } catch {
+            // Expected: memo is not a PendingSwapState JSON — this is a normal non-swap transaction
+            continue;
+          }
           if (!swapState.trustedMintQuoteId || !swapState.trustedMintUrl) continue;
 
           console.log(`[nutsd] Resuming pending swap: quote ${swapState.trustedMintQuoteId}`);
@@ -1131,9 +1196,9 @@ export function useWallet() {
               try {
                 const added = await addMint({ url: swapState.trustedMintUrl, unit: swapState.unit, active: true });
                 if (added) mint = added;
-              } catch {
+              } catch (err) {
                 // Mint unreachable — do NOT mark completed. Leave pending for next startup.
-                console.warn(`[nutsd] Swap resume: trusted mint ${swapState.trustedMintUrl} unreachable, preserving pending state`);
+                console.warn(`[nutsd:financial] Swap resume: trusted mint ${swapState.trustedMintUrl} unreachable, preserving pending state:`, err);
                 continue;
               }
             }
@@ -1404,6 +1469,7 @@ export function useWallet() {
     mintFeePpk,
     keysetFeeMap,
     pendingProofCount,
+    mintHealth,
 
     // Mint operations
     addMint,

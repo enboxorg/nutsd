@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Loader2Icon, XIcon, ShieldAlertIcon, ArrowRightLeftIcon, ShieldCheckIcon } from 'lucide-react';
 import { toastError, formatAmount, truncateMintUrl } from '@/lib/utils';
 import { estimateCrossMintSwap, formatSwapFee, type CrossMintSwapEstimate } from '@/cashu/cross-mint-swap';
+import { DialogWrapper } from '@/components/ui/dialog-wrapper';
 import type { Mint } from '@/hooks/use-wallet';
 
 interface TrustMintDialogProps {
@@ -53,8 +54,8 @@ export const TrustMintDialog: React.FC<TrustMintDialogProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-card border border-border p-6 rounded-xl shadow-xl max-w-sm w-full space-y-4">
+    <DialogWrapper open={true} onClose={onCancel}>
+      <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <ShieldAlertIcon className="h-5 w-5 text-[var(--color-warning)]" />
@@ -140,6 +141,6 @@ export const TrustMintDialog: React.FC<TrustMintDialogProps> = ({
           </div>
         )}
       </div>
-    </div>
+    </DialogWrapper>
   );
 };

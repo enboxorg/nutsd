@@ -150,7 +150,7 @@ export function subscribeToQuote({
           callbacks.onIssued?.();
         }
       } catch {
-        // Unparseable message — ignore
+        // Expected: non-JSON or non-NUT-17 message from WebSocket — ignore
       }
     };
 
@@ -165,8 +165,9 @@ export function subscribeToQuote({
       // Connection lost unexpectedly — fall back to polling
       fallbackToPolling();
     };
-  } catch {
+  } catch (err) {
     // WebSocket constructor threw — fall back to polling
+    console.warn('[nutsd] WebSocket connection failed, falling back to polling:', err);
     fallbackToPolling();
   }
 
@@ -188,6 +189,7 @@ function getWebSocketUrl(mintUrl: string): string | null {
     const path = url.pathname.endsWith('/') ? url.pathname.slice(0, -1) : url.pathname;
     return `${wsScheme}//${url.host}${path}/v1/ws`;
   } catch {
+    // Expected: invalid URL string — cannot derive WebSocket URL
     return null;
   }
 }

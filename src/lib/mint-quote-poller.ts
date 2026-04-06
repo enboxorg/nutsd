@@ -102,8 +102,9 @@ export function startMintQuotePolling({
         onExpired?.();
         return;
       }
-    } catch {
+    } catch (err) {
       // Transient quote-check failures should not fail the flow permanently.
+      console.warn('[nutsd] Transient quote check failure (will retry):', err);
     }
 
     schedule();

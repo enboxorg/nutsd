@@ -81,7 +81,7 @@ export const MintDetail: React.FC<MintDetailProps> = ({
     setLoadingInfo(true);
     getMintInfo(mint.url, mint.unit)
       .then((i) => { if (!cancelled) { setInfo(i); setMintOnline(true); } })
-      .catch(() => { if (!cancelled) setMintOnline(false); /* use cached info from mint record */ })
+      .catch((err) => { if (!cancelled) { setMintOnline(false); console.warn('[nutsd] Mint info fetch failed (using cached):', err); } })
       .finally(() => { if (!cancelled) setLoadingInfo(false); });
     return () => { cancelled = true; };
   }, [mint.url, mint.unit]);
@@ -92,7 +92,8 @@ export const MintDetail: React.FC<MintDetailProps> = ({
       setCopied(true);
       toastSuccess('Mint URL copied');
       setTimeout(() => setCopied(false), 2000);
-    } catch {
+    } catch (err) {
+      console.warn('[nutsd] Clipboard write failed:', err);
       toastError('Copy failed', new Error('Clipboard access denied'));
     }
   };
@@ -156,6 +157,11 @@ export const MintDetail: React.FC<MintDetailProps> = ({
           <div className="amount-display text-3xl font-bold tracking-tight">
             {formatAmount(balance, mint.unit)}
           </div>
+          {balance === 0 && (
+            <p className="text-xs text-muted-foreground text-center py-2">
+              No balance yet. Go back and tap Deposit to add funds via Lightning.
+            </p>
+          )}
         </div>
 
         {/* Name editing */}
