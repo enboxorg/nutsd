@@ -1113,9 +1113,22 @@ export function useWallet() {
             }
           } else {
             // resumePendingSwap returned empty proofs — quote was ISSUED (already
-            // minted by another session). Mark completed so it doesn't retry forever.
-            await record.update({ data: { ...tx, status: 'completed', memo: 'Swap already completed (ISSUED)' } });
-            console.log(`[nutsd] Pending swap already completed (ISSUED): ${swapState.trustedMintQuoteId}`);
+            // minted by a previous session/attempt). Two possibilities:
+            //
+            // 1. The previous attempt wrote a stash → stash recovery (which ran
+            //    earlier in the startup sequence) already recovered the proofs.
+            //    Proofs are in the local store. Marking completed is correct.
+            //
+            // 2. The previous attempt crashed before writing the stash (the
+            //    documented ~ms pre-stash window). Proofs are unrecoverable —
+            //    the mint won't re-issue, and no stash exists. Keeping this
+            //    pending would just hit ISSUED on every startup forever with
+            //    no recovery path. Marking completed is the honest outcome.
+            //
+            // In both cases, marking completed is correct. The stash is the
+            // safety net, and it already ran before we got here.
+            await record.update({ data: { ...tx, status: 'completed', memo: 'Swap completed (ISSUED — proofs recovered via stash or in pre-stash loss window)' } });
+            console.log(`[nutsd] Pending swap ISSUED: ${swapState.trustedMintQuoteId} — proofs should have been recovered by stash recovery`);
           }
         } catch (err) {
           // Leave for next startup — the quote may still settle
