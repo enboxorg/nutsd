@@ -2,8 +2,9 @@ import { useState, useEffect, useRef } from 'react';
 import { Loader2Icon, XIcon, DownloadIcon, ZapIcon, CopyIcon, CheckIcon, ChevronDownIcon } from 'lucide-react';
 import { toastError, toastSuccess, truncateMintUrl } from '@/lib/utils';
 import { receiveToken, createMintQuote, checkMintQuote, mintTokens } from '@/cashu/wallet-ops';
-import { startMintQuotePolling } from '@/lib/mint-quote-poller';
-import { extractMintUrl, isCashuToken } from '@/cashu/token-utils';
+import { subscribeToQuote } from '@/lib/mint-ws';
+import { extractMintUrl, isCashuToken, isP2pkLockedToken } from '@/cashu/token-utils';
+import { receiveP2pkLocked } from '@/cashu/p2pk';
 import { QRCodeDisplay } from '@/components/qr-code';
 import type { Mint } from '@/hooks/use-wallet';
 import type { Proof } from '@cashu/cashu-ts';
@@ -11,6 +12,8 @@ import type { TransactionData } from '@/protocol/cashu-wallet-protocol';
 
 interface ReceiveDialogProps {
   mints: Mint[];
+  /** P2PK private key for unlocking locked tokens. */
+  p2pkPrivateKey?: string;
   onClose: () => void;
   onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
@@ -20,6 +23,7 @@ type Tab = 'token' | 'lightning';
 
 export const ReceiveDialog: React.FC<ReceiveDialogProps> = ({
   mints,
+  p2pkPrivateKey,
   onClose,
   onProofsReceived,
   onTransactionCreated,
@@ -63,6 +67,7 @@ export const ReceiveDialog: React.FC<ReceiveDialogProps> = ({
         {tab === 'token' && (
           <TokenTab
             mints={mints}
+            p2pkPrivateKey={p2pkPrivateKey}
             onClose={onClose}
             onProofsReceived={onProofsReceived}
             onTransactionCreated={onTransactionCreated}
@@ -88,10 +93,11 @@ export const ReceiveDialog: React.FC<ReceiveDialogProps> = ({
 
 const TokenTab: React.FC<{
   mints: Mint[];
+  p2pkPrivateKey?: string;
   onClose: () => void;
   onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
-}> = ({ mints, onClose, onProofsReceived, onTransactionCreated }) => {
+}> = ({ mints, p2pkPrivateKey, onClose, onProofsReceived, onTransactionCreated }) => {
   const [tokenInput, setTokenInput] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -108,21 +114,32 @@ const TokenTab: React.FC<{
       if (!mintUrl) throw new Error('Could not determine mint URL from token');
 
       const knownMint = mints.find(m => m.url === mintUrl);
-      const newProofs = await receiveToken(mintUrl, trimmed);
-      const totalReceived = newProofs.reduce((s, p) => s + p.amount, 0);
+      let newProofs: Proof[];
 
+      // Detect P2PK-locked tokens and unlock with stored key
+      if (isP2pkLockedToken(trimmed) && p2pkPrivateKey) {
+        newProofs = await receiveP2pkLocked(mintUrl, trimmed, p2pkPrivateKey);
+      } else if (isP2pkLockedToken(trimmed)) {
+        throw new Error(
+          'This token is locked with P2PK. Your wallet does not have the private key to unlock it.'
+        );
+      } else {
+        newProofs = await receiveToken(mintUrl, trimmed);
+      }
+
+      const totalReceived = newProofs.reduce((s, p) => s + p.amount, 0);
       const contextId = knownMint?.contextId ?? '';
       await onProofsReceived(contextId, newProofs, mintUrl);
 
       await onTransactionCreated({
         type: 'receive',
         amount: totalReceived,
-        unit: 'sat',
+        unit: knownMint?.unit ?? 'sat',
         mintUrl,
         status: 'completed',
       });
 
-      toastSuccess('Token received', `+${totalReceived} sat`);
+      toastSuccess('Token received', `+${totalReceived} ${knownMint?.unit ?? 'sat'}`);
       onClose();
     } catch (err) {
       toastError('Failed to receive token', err);
@@ -216,51 +233,56 @@ const LightningTab: React.FC<{
       const quoteId = quote.quote;
       const quoteExpiry = quote.expiry ?? null;
 
-      stopPollingRef.current = startMintQuotePolling({
-        check: () => checkMintQuote(mintUrl, quoteId, mintUnit).then(s => ({
+      stopPollingRef.current = subscribeToQuote({
+        mintUrl: mintUrl,
+        quoteId: quoteId,
+        quoteType: 'bolt11_mint_quote',
+        callbacks: {
+          onPaid: async () => {
+            if (!mountedRef.current) return;
+            setLnStep('waiting');
+            try {
+              const proofs = await mintTokens(mintUrl, amountNum, quoteId, mintUnit);
+              if (!mountedRef.current) return;
+              await onProofsReceived(mintCtx, proofs, mintUrl);
+              await onTransactionCreated({
+                type   : 'mint',
+                amount : amountNum,
+                unit   : mintUnit,
+                mintUrl,
+                status : 'completed',
+                memo   : `Lightning deposit via ${truncateMintUrl(mintUrl)}`,
+              });
+              if (mountedRef.current) {
+                setLnStep('done');
+                toastSuccess('Received!', `+${amountNum} ${mintUnit}`);
+              }
+            } catch (err) {
+              if (mountedRef.current) {
+                setErrorMsg(err instanceof Error ? err.message : 'Failed to mint tokens');
+                setLnStep('error');
+              }
+            }
+          },
+          onExpired: () => {
+            if (mountedRef.current) {
+              setErrorMsg('The invoice has expired. Please create a new one.');
+              setLnStep('error');
+            }
+          },
+          onIssued: () => {
+            if (mountedRef.current) {
+              setErrorMsg('These tokens were already minted (possibly in another session).');
+              setLnStep('error');
+            }
+          },
+          isActive: () => mountedRef.current,
+        },
+        checkFn: () => checkMintQuote(mintUrl, quoteId, mintUnit).then(s => ({
           state  : s.state as 'UNPAID' | 'PAID' | 'ISSUED',
           expiry : s.expiry ?? null,
         })),
-        onPaid: async () => {
-          if (!mountedRef.current) return;
-          setLnStep('waiting');
-          try {
-            const proofs = await mintTokens(mintUrl, amountNum, quoteId, mintUnit);
-            if (!mountedRef.current) return;
-            await onProofsReceived(mintCtx, proofs, mintUrl);
-            await onTransactionCreated({
-              type   : 'mint',
-              amount : amountNum,
-              unit   : mintUnit,
-              mintUrl,
-              status : 'completed',
-              memo   : `Lightning deposit via ${truncateMintUrl(mintUrl)}`,
-            });
-            if (mountedRef.current) {
-              setLnStep('done');
-              toastSuccess('Received!', `+${amountNum} ${mintUnit}`);
-            }
-          } catch (err) {
-            if (mountedRef.current) {
-              setErrorMsg(err instanceof Error ? err.message : 'Failed to mint tokens');
-              setLnStep('error');
-            }
-          }
-        },
-        onExpired: () => {
-          if (mountedRef.current) {
-            setErrorMsg('The invoice has expired. Please create a new one.');
-            setLnStep('error');
-          }
-        },
-        onIssued: () => {
-          if (mountedRef.current) {
-            setErrorMsg('These tokens were already minted (possibly in another session).');
-            setLnStep('error');
-          }
-        },
-        isActive : () => mountedRef.current,
-        expiry   : quoteExpiry,
+        expiry: quoteExpiry,
       });
     } catch (err) {
       toastError('Failed to create invoice', err);

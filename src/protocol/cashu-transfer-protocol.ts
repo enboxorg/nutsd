@@ -20,6 +20,7 @@
  */
 
 import type { ProtocolDefinition } from '@enbox/dwn-sdk-js';
+import { defineProtocol } from '@enbox/api';
 import { isValidP2pkPublicKey } from '@/cashu/p2pk';
 
 // ---------------------------------------------------------------------------
@@ -126,3 +127,18 @@ export function assertP2PKLocked(data: TransferData): void {
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Schema map & typed protocol export
+// ---------------------------------------------------------------------------
+
+export type CashuTransferSchemaMap = {
+  transfer: TransferData;
+  request: PaymentRequestData;
+};
+
+/** Typed Cashu Transfer protocol for use with `enbox.using()`. */
+export const CashuTransferProtocol = defineProtocol(
+  CashuTransferDefinition,
+  {} as CashuTransferSchemaMap,
+);

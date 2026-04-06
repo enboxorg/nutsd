@@ -29,7 +29,7 @@ import { detectInput } from '@/lib/input-detect';
 import { receiveToken } from '@/cashu/wallet-ops';
 import { extractMintUrl } from '@/cashu/token-utils';
 
-import { toastError, toastSuccess } from '@/lib/utils';
+import { toastError, toastSuccess, formatAmount } from '@/lib/utils';
 import { truncateMiddle } from '@/lib/utils';
 import { checkTokenSpent } from '@/cashu/wallet-ops';
 import { brand } from '@/lib/brand';
@@ -44,6 +44,7 @@ import {
   KeyIcon,
   CopyIcon,
   UsersIcon,
+  DownloadIcon,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -51,7 +52,7 @@ import {
 // ---------------------------------------------------------------------------
 
 function WalletHome() {
-  const { did, disconnect } = useEnbox();
+  const { did, disconnect, enbox } = useEnbox();
   const { theme, setTheme } = useTheme();
   const {
     mints,
@@ -76,6 +77,9 @@ function WalletHome() {
     markProofsPending,
     revertProofsToUnspent,
     reconcilePendingProofs,
+    incomingTransfers,
+    checkIncomingTransfers,
+    redeemIncomingTransfer,
     proofs,
   } = useWallet();
 
@@ -345,6 +349,37 @@ function WalletHome() {
               </div>
             )}
 
+            {/* Incoming P2P transfers banner */}
+            {incomingTransfers.length > 0 && (
+              <div className="rounded-lg bg-[var(--color-info)]/10 border border-[var(--color-info)]/30 p-3 space-y-2">
+                <div className="flex items-center justify-between text-sm font-medium">
+                  <div className="flex items-center gap-2">
+                    <DownloadIcon className="h-4 w-4 text-[var(--color-info)]" />
+                    {incomingTransfers.length} incoming P2P transfer{incomingTransfers.length !== 1 ? 's' : ''}
+                  </div>
+                  <button
+                    onClick={() => checkIncomingTransfers()}
+                    className="text-[10px] text-muted-foreground hover:text-foreground"
+                  >
+                    Refresh
+                  </button>
+                </div>
+                {incomingTransfers.map((transfer, i) => (
+                  <div key={i} className="flex items-center justify-between text-xs">
+                    <span className="text-muted-foreground">
+                      {formatAmount(transfer.amount, transfer.unit)} from {transfer.senderDid?.slice(0, 20)}...
+                    </span>
+                    <button
+                      onClick={() => redeemIncomingTransfer(transfer, i).catch(err => toastError('Redeem failed', err))}
+                      className="px-2 py-1 rounded-full bg-primary text-primary-foreground text-[10px] font-medium"
+                    >
+                      Claim
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {/* P2PK public key display */}
             {p2pkKey && (
               <div className="flex items-center gap-2 p-3 rounded-lg bg-card border border-border text-xs">
@@ -466,6 +501,7 @@ function WalletHome() {
           mintBalances={mintBalances}
           getUnspentProofs={getUnspentProofsForMint}
           senderDid={did}
+          enbox={enbox}
           onClose={() => setShowSendToDid(false)}
           onNewProofs={storeNewProofs}
           onOldProofsSpent={removeProofsByIds}
@@ -476,6 +512,7 @@ function WalletHome() {
       {showReceive && (
         <ReceiveDialog
           mints={mints}
+          p2pkPrivateKey={p2pkKey?.privateKey}
           onClose={() => setShowReceive(false)}
           onProofsReceived={storeNewProofsForMintUrl}
           onTransactionCreated={recordTransaction}

@@ -35,12 +35,14 @@ import {
   type P2pkKeyData,
   type ProofState,
 } from '@/protocol/cashu-wallet-protocol';
+import { CashuTransferProtocol } from '@/protocol/cashu-transfer-protocol';
+import type { TransferData } from '@/protocol/cashu-transfer-protocol';
 import {
   checkProofsState,
   getKeysetInfos,
   type KeysetInfo,
 } from '@/cashu/wallet-ops';
-import { generateP2pkKeyPair, type P2pkKeyPair } from '@/cashu/p2pk';
+import { generateP2pkKeyPair, receiveP2pkLocked, type P2pkKeyPair } from '@/cashu/p2pk';
 
 // ---------------------------------------------------------------------------
 // Domain types — flattened from TypedRecord for the UI layer
@@ -117,6 +119,7 @@ export function useWallet() {
 
   const [repo, setRepo] = useState<Repo>(null);
   const typedRef = useRef<any>(null);
+  const transferTypedRef = useRef<any>(null);
 
   // --- Core state ---
   const [mints, setMints] = useState<Mint[]>([]);
@@ -125,6 +128,7 @@ export function useWallet() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [preferences, setPreferences] = useState<WalletPreferences>({});
   const [p2pkKey, setP2pkKey] = useState<P2pkKeyPair | null>(null);
+  const [incomingTransfers, setIncomingTransfers] = useState<TransferData[]>([]);
   const [loading, setLoading] = useState(false);
   const [reconciling, setReconciling] = useState(false);
 
@@ -142,8 +146,17 @@ export function useWallet() {
       r.configure().catch((err: unknown) =>
         console.warn('[nutsd] Protocol configure (may already exist):', err),
       );
+
+      // Install transfer protocol (idempotent)
+      const transferTyped = enbox.using(CashuTransferProtocol);
+      transferTypedRef.current = transferTyped;
+      const transferRepo = repository(transferTyped);
+      transferRepo.configure().catch((err: unknown) =>
+        console.warn('[nutsd] Transfer protocol configure:', err),
+      );
     } else {
       typedRef.current = null;
+      transferTypedRef.current = null;
       setRepo(null);
       setMints([]);
       setProofs([]);
@@ -151,6 +164,7 @@ export function useWallet() {
       setTransactions([]);
       setPreferences({});
       setP2pkKey(null);
+      setIncomingTransfers([]);
       proofRecordCache.current.clear();
     }
   }, [enbox, isConnected]);
@@ -317,6 +331,29 @@ export function useWallet() {
     }
   }, [repo]);
 
+  /** Query the user's DWN for incoming transfer protocol records. */
+  const checkIncomingTransfers = useCallback(async () => {
+    const transferTyped = transferTypedRef.current;
+    if (!transferTyped) return;
+    try {
+      const { records } = await transferTyped.records.query({
+        protocolPath: 'transfer',
+      });
+      if (!records || records.length === 0) return;
+
+      const transfers: TransferData[] = [];
+      for (const record of records) {
+        try {
+          const data: TransferData = await record.data.json();
+          transfers.push(data);
+        } catch { /* skip unreadable records */ }
+      }
+      setIncomingTransfers(transfers);
+    } catch (err) {
+      console.warn('[nutsd] Failed to check incoming transfers:', err);
+    }
+  }, []);
+
   // --- Initial load ---
   useEffect(() => {
     if (!repo) return;
@@ -330,8 +367,9 @@ export function useWallet() {
     if (mints.length > 0) {
       refreshProofs();
       refreshKeysets();
+      checkIncomingTransfers();
     }
-  }, [mints, refreshProofs, refreshKeysets]);
+  }, [mints, refreshProofs, refreshKeysets, checkIncomingTransfers]);
 
   // --- Subscriptions ---
   const refreshRef = useRef<() => void>(() => {});
@@ -864,6 +902,53 @@ export function useWallet() {
   }, [repo]);
 
   // =========================================================================
+  // Incoming P2P transfers
+  // =========================================================================
+
+  const redeemIncomingTransfer = useCallback(async (transfer: TransferData, index: number) => {
+    if (!p2pkKey?.privateKey) {
+      throw new Error('Cannot redeem P2PK transfer: no private key available');
+    }
+
+    // Redeem the P2PK-locked token
+    const newProofs = await receiveP2pkLocked(
+      transfer.mintUrl, transfer.token, p2pkKey.privateKey, transfer.unit,
+    );
+
+    // Store the fresh proofs
+    const mint = mints.find(m => m.url === transfer.mintUrl);
+    if (mint) {
+      for (const proof of newProofs) {
+        await addProof(mint.contextId, {
+          amount  : proof.amount,
+          id      : proof.id,
+          secret  : proof.secret,
+          C       : proof.C,
+          state   : 'unspent',
+          dleq    : proof.dleq ? { e: String(proof.dleq.e), s: String(proof.dleq.s), r: String(proof.dleq.r) } : undefined,
+          witness : proof.witness ? (typeof proof.witness === 'string' ? proof.witness : JSON.stringify(proof.witness)) : undefined,
+        });
+      }
+    }
+
+    // Record transaction
+    const totalReceived = newProofs.reduce((s, p) => s + p.amount, 0);
+    await addTransaction({
+      type       : 'p2p-receive',
+      amount     : totalReceived,
+      unit       : transfer.unit,
+      mintUrl    : transfer.mintUrl,
+      status     : 'completed',
+      senderDid  : transfer.senderDid,
+      memo       : transfer.memo,
+      createdAt  : new Date().toISOString(),
+    });
+
+    // Remove from pending
+    setIncomingTransfers(prev => prev.filter((_, i) => i !== index));
+  }, [p2pkKey, mints, addProof, addTransaction]);
+
+  // =========================================================================
   // Preferences
   // =========================================================================
 
@@ -941,6 +1026,11 @@ export function useWallet() {
 
     // Preferences
     updatePreferences,
+
+    // Incoming P2P transfers
+    incomingTransfers,
+    checkIncomingTransfers,
+    redeemIncomingTransfer,
 
     // Repo access for advanced operations
     repo,

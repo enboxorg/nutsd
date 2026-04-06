@@ -9,35 +9,83 @@ interface AddMintDialogProps {
   onClose: () => void;
 }
 
+function extractSupportedUnits(info: MintInfo): string[] {
+  try {
+    const nuts = (info as any).nuts ?? (info.cache as any)?.nuts ?? {};
+    const nut4 = nuts['4'];
+    if (nut4?.methods && Array.isArray(nut4.methods)) {
+      const unitSet = new Set<string>();
+      for (const method of nut4.methods) {
+        if (method.unit) unitSet.add(method.unit);
+      }
+      if (unitSet.size > 0) return Array.from(unitSet);
+    }
+  } catch { /* fall back */ }
+  return ['sat'];
+}
+
 export const AddMintDialog: React.FC<AddMintDialogProps> = ({ onAdd, onClose }) => {
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
+  const [units, setUnits] = useState<string[]>([]);
+  const [selectedUnit, setSelectedUnit] = useState<string>('');
+  const [mintInfo, setMintInfo] = useState<MintInfo | null>(null);
+  const [normalizedUrl, setNormalizedUrl] = useState('');
 
   const handleAdd = async () => {
+    // If unit selector is already shown, use cached info
+    if (mintInfo && normalizedUrl && selectedUnit) {
+      setLoading(true);
+      try {
+        await onAdd({
+          url: normalizedUrl,
+          name: mintInfo.name || undefined,
+          unit: selectedUnit,
+          active: true,
+          info: mintInfo.cache as unknown as Record<string, unknown>,
+        });
+        toastSuccess('Mint added', normalizedUrl);
+        onClose();
+      } catch (err) {
+        toastError('Failed to connect to mint', err);
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
     let mintUrl = url.trim();
     if (!mintUrl) return;
-
-    // Normalize: remove trailing slash
     mintUrl = mintUrl.replace(/\/+$/, '');
-
-    // Add https if no protocol
     if (!mintUrl.startsWith('http://') && !mintUrl.startsWith('https://')) {
       mintUrl = `https://${mintUrl}`;
     }
 
     setLoading(true);
     try {
-      // Fetch mint info to validate
       const info: MintInfo = await getMintInfo(mintUrl);
 
-      await onAdd({
-        url    : mintUrl,
-        name   : info.name || undefined,
-        unit   : 'sat',
-        active : true,
-        info   : info.cache as unknown as Record<string, unknown>,
-      });
+      // Extract supported units from NUT-04 (mint) methods
+      const availableUnits = extractSupportedUnits(info);
 
+      if (availableUnits.length > 1 && !selectedUnit) {
+        // Show unit selector
+        setUnits(availableUnits);
+        setSelectedUnit(availableUnits[0]);
+        setMintInfo(info);
+        setNormalizedUrl(mintUrl);
+        setLoading(false);
+        return;
+      }
+
+      const unit = selectedUnit || availableUnits[0] || 'sat';
+      await onAdd({
+        url: mintUrl,
+        name: info.name || undefined,
+        unit,
+        active: true,
+        info: info.cache as unknown as Record<string, unknown>,
+      });
       toastSuccess('Mint added', mintUrl);
       onClose();
     } catch (err) {
@@ -75,6 +123,27 @@ export const AddMintDialog: React.FC<AddMintDialogProps> = ({ onAdd, onClose }) 
             Enter the URL of a Cashu mint. The mint info will be fetched to verify connectivity.
           </p>
         </div>
+
+        {units.length > 1 && (
+          <div className="space-y-2">
+            <label className="text-xs text-muted-foreground">Currency Unit</label>
+            <div className="flex flex-wrap gap-2">
+              {units.map(u => (
+                <button
+                  key={u}
+                  onClick={() => setSelectedUnit(u)}
+                  className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                    selectedUnit === u
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-muted text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  {u.toUpperCase()}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="flex gap-2 justify-end">
           <button

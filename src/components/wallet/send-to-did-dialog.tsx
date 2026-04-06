@@ -3,7 +3,7 @@ import { Loader2Icon, XIcon, UsersIcon, KeyIcon } from 'lucide-react';
 import { toastError, toastSuccess, truncateMintUrl, formatAmount } from '@/lib/utils';
 import { sendP2pkLocked, isValidP2pkPublicKey } from '@/cashu/p2pk';
 import { encodeToken } from '@/cashu/token-utils';
-import { assertP2PKLocked, type TransferData } from '@/protocol/cashu-transfer-protocol';
+import { CashuTransferProtocol, assertP2PKLocked, type TransferData } from '@/protocol/cashu-transfer-protocol';
 import type { Mint, StoredProof } from '@/hooks/use-wallet';
 import type { Proof } from '@cashu/cashu-ts';
 import type { TransactionData } from '@/protocol/cashu-wallet-protocol';
@@ -13,6 +13,8 @@ interface SendToDIDDialogProps {
   mintBalances: Map<string, number>;
   getUnspentProofs: (mintUrl: string) => StoredProof[];
   senderDid: string;
+  /** Enbox instance for DWN writes. */
+  enbox: any;
   onClose: () => void;
   onNewProofs: (mintContextId: string, proofs: Proof[]) => Promise<void>;
   onOldProofsSpent: (ids: string[]) => Promise<void>;
@@ -27,6 +29,7 @@ export const SendToDIDDialog: React.FC<SendToDIDDialogProps> = ({
   mintBalances,
   getUnspentProofs,
   senderDid,
+  enbox,
   onClose,
   onNewProofs,
   onOldProofsSpent,
@@ -112,13 +115,35 @@ export const SendToDIDDialog: React.FC<SendToDIDDialogProps> = ({
         memo: memo.trim() || undefined,
       });
 
-      // TODO: Write transfer record to recipient's DWN via transfer protocol
-      // This requires the recipient to have the transfer protocol installed
-      // and for us to have their DWN endpoint. For now, the token is stored
-      // in the transaction record and can be shared out-of-band.
+      // Write transfer record to recipient's DWN
+      let dwnWriteSucceeded = false;
+      if (recipientDid.trim()) {
+        try {
+          const transferTyped = enbox.using(CashuTransferProtocol);
+          const { record } = await transferTyped.records.create('transfer', {
+            data  : transferData,
+            store : false, // don't persist locally — sender doesn't need it
+          });
+          if (record) {
+            const { status: sendStatus } = await record.send(recipientDid.trim());
+            if (sendStatus.code >= 200 && sendStatus.code < 300) {
+              console.log(`[nutsd] Transfer record sent to ${recipientDid.trim()}'s DWN`);
+              dwnWriteSucceeded = true;
+            } else {
+              console.warn(`[nutsd] Transfer send returned status ${sendStatus.code}: ${sendStatus.detail}`);
+            }
+          }
+        } catch (err) {
+          // DWN write failure is non-fatal — token is still available in tx history
+          console.warn('[nutsd] Failed to write transfer to recipient DWN:', err);
+        }
+      }
 
       setStep('done');
-      toastSuccess('P2PK-locked token created', `${formatAmount(amountNum, selectedMint.unit)}`);
+      toastSuccess(
+        dwnWriteSucceeded ? 'Token sent to recipient\'s DWN' : 'P2PK-locked token created',
+        `${formatAmount(amountNum, selectedMint.unit)}`,
+      );
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
       setStep('error');
