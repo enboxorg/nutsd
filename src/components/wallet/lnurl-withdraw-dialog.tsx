@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react';
 import { Loader2Icon, XIcon, ZapIcon, UserIcon } from 'lucide-react';
 import { toastError, toastSuccess, truncateMintUrl, formatAmount } from '@/lib/utils';
-import { acquireWalletLock } from '@/lib/wallet-mutex';
+import { acquireWalletLock, isUnloading } from '@/lib/wallet-mutex';
 import {
   resolveLightningAddress,
   resolveLnurl,
@@ -165,6 +165,7 @@ export const LnurlWithdrawDialog: React.FC<LnurlWithdrawDialogProps> = ({
         setStep('error');
       }
     } catch (err) {
+      if (isUnloading()) return;
       setErrorMsg(err instanceof Error ? err.message : String(err));
       setStep('error');
     } finally {

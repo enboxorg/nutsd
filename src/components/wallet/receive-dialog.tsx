@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Loader2Icon, XIcon, DownloadIcon, ZapIcon, CopyIcon, CheckIcon, ChevronDownIcon } from 'lucide-react';
 import { toastError, toastSuccess, truncateMintUrl } from '@/lib/utils';
-import { receiveToken, createMintQuote, checkMintQuote, mintTokens, getMintInfo } from '@/cashu/wallet-ops';
+import { receiveToken, createMintQuote, checkMintQuote, mintTokens, getMintInfo, isTokenSpendable } from '@/cashu/wallet-ops';
 import { acquireWalletLock } from '@/lib/wallet-mutex';
 import { subscribeToQuote } from '@/lib/mint-ws';
 import { extractMintUrl, isCashuToken, isP2pkLockedToken } from '@/cashu/token-utils';
@@ -140,6 +140,13 @@ const TokenTab: React.FC<{
             'add the mint manually first.',
           );
         }
+      }
+
+      // Pre-check: verify token is still spendable (NUT-07) before attempting redeem.
+      // This avoids the confusing mint error when the token was already claimed.
+      const spendable = await isTokenSpendable(trimmed, mintUrl);
+      if (spendable === false) {
+        throw new Error('This token has already been claimed and cannot be received again.');
       }
 
       let newProofs: Proof[];

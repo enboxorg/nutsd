@@ -2,7 +2,7 @@ import { useState, useRef } from 'react';
 import { Loader2Icon, XIcon, ArrowUpIcon } from 'lucide-react';
 import { toastError, toastSuccess, truncateMintUrl, formatAmount } from '@/lib/utils';
 import { createMeltQuote, meltTokens, estimateInputFee } from '@/cashu/wallet-ops';
-import { acquireWalletLock } from '@/lib/wallet-mutex';
+import { acquireWalletLock, isUnloading } from '@/lib/wallet-mutex';
 import type { Mint, StoredProof } from '@/hooks/use-wallet';
 import type { Proof } from '@cashu/cashu-ts';
 import type { MeltQuoteBolt11Response } from '@/cashu/wallet-ops';
@@ -154,8 +154,10 @@ export const WithdrawDialog: React.FC<WithdrawDialogProps> = ({
         setStep('error');
       }
     } catch (err) {
-      // On error, proofs were submitted but we don't know their state.
-      // Leave as pending — reconcilePendingProofs() handles recovery.
+      // If the browser is unloading (tab close/refresh), skip UI updates — the
+      // browser killed the request but the mint may have already processed it.
+      // Proofs stay pending; reconcilePendingProofs() resolves on next startup.
+      if (isUnloading()) return;
       setErrorMsg(err instanceof Error ? err.message : String(err));
       setStep('error');
     } finally {

@@ -26,6 +26,7 @@ let waitQueue: Array<{ resolve: () => void; reject: (err: Error) => void }> = []
 export function _resetMutex(): void {
   locked = false;
   lockHolder = null;
+  _isUnloading = false;
   for (const w of waitQueue) {
     w.reject(new Error('Mutex reset'));
   }
@@ -111,14 +112,41 @@ function createRelease(operation: string): () => void {
 }
 
 // ---------------------------------------------------------------------------
-// beforeunload handler (prevents tab close during in-flight operations)
+// Unload detection (cashu.me pattern)
+// ---------------------------------------------------------------------------
+
+/**
+ * True when the browser is in the process of unloading (tab close, refresh, navigate away).
+ *
+ * Catch blocks in melt/send operations should check this flag before
+ * rolling back proof state. If the tab is closing, the network request
+ * was killed by the browser — but the mint may have already processed it.
+ * Skipping rollback ensures proofs stay in `pending` state, and
+ * `reconcilePendingProofs()` on next startup resolves them correctly.
+ *
+ * This is the pattern used by cashu.me — more reliable than trying to
+ * prevent the tab from closing (browsers mostly ignore custom messages).
+ */
+let _isUnloading = false;
+
+export function isUnloading(): boolean {
+  return _isUnloading;
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', () => {
+    _isUnloading = true;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// beforeunload prompt (best-effort — most browsers ignore the custom message)
 // ---------------------------------------------------------------------------
 
 function onBeforeUnload(e: BeforeUnloadEvent): void {
   if (locked) {
     e.preventDefault();
-    // Modern browsers ignore custom messages but still show a prompt
-    e.returnValue = 'A wallet operation is in progress. Closing now may result in stuck funds.';
+    e.returnValue = '';
   }
 }
 
