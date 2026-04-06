@@ -48,12 +48,17 @@ export const PayRequestDialog: React.FC<PayRequestDialogProps> = ({
     );
   }
 
-  // Find a mint that matches the request's accepted mints
+  // Find a mint that matches the request's accepted mints AND unit.
+  // A single mint URL can appear multiple times with different units.
+  const requestUnit = request.unit ?? 'sat';
   const matchingMint = request.mints?.length
-    ? mints.find(m => request.mints!.includes(m.url))
-    : mints[0]; // No mint restriction — use default
+    ? mints.find(m => request.mints!.includes(m.url) && m.unit === requestUnit)
+      ?? mints.find(m => request.mints!.includes(m.url)) // fallback: URL match without unit
+    : mints.find(m => m.unit === requestUnit) ?? mints[0]; // No mint restriction — prefer matching unit
 
-  const amount = request.amount || 0;
+  const [customAmount, setCustomAmount] = useState('');
+  const isOpenAmount = !request.amount || request.amount <= 0;
+  const amount = isOpenAmount ? (parseInt(customAmount) || 0) : (request.amount ?? 0);
   const balance = matchingMint ? (mintBalances.get(matchingMint.url) ?? 0) : 0;
 
   const handlePay = async () => {
@@ -131,10 +136,32 @@ export const PayRequestDialog: React.FC<PayRequestDialogProps> = ({
               )}
             </div>
 
-            {!matchingMint && (
-              <p className="text-xs text-destructive">You don&apos;t have a mint that matches this request.</p>
+            {/* Amount input for open-ended ("any amount") requests */}
+            {isOpenAmount && matchingMint && (
+              <div className="space-y-2">
+                <div className="flex justify-between items-center">
+                  <label className="text-xs text-muted-foreground">Amount ({requestUnit})</label>
+                  <span className="text-xs text-muted-foreground">
+                    Balance: {formatAmount(balance, matchingMint.unit)}
+                  </span>
+                </div>
+                <input
+                  type="number"
+                  value={customAmount}
+                  onChange={(e) => setCustomAmount(e.target.value)}
+                  placeholder="Enter amount"
+                  min="1"
+                  max={balance}
+                  className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  autoFocus
+                />
+              </div>
             )}
-            {matchingMint && amount > balance && (
+
+            {!matchingMint && (
+              <p className="text-xs text-destructive">You don&apos;t have a mint that matches this request{requestUnit !== 'sat' ? ` (unit: ${requestUnit})` : ''}.</p>
+            )}
+            {matchingMint && amount > 0 && amount > balance && (
               <p className="text-xs text-destructive">Insufficient balance at {truncateMintUrl(matchingMint.url)} ({formatAmount(balance, matchingMint.unit)})</p>
             )}
 
@@ -144,7 +171,7 @@ export const PayRequestDialog: React.FC<PayRequestDialogProps> = ({
               className="w-full px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               {loading && <Loader2Icon className="h-3 w-3 animate-spin" />}
-              Pay {amount > 0 ? formatAmount(amount, request.unit) : ''}
+              Pay {amount > 0 ? formatAmount(amount, requestUnit) : ''}
             </button>
           </div>
         )}
