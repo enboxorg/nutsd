@@ -20,7 +20,13 @@ import { ReceiveDialog } from '@/components/wallet/receive-dialog';
 import { RecoveryPhraseDialog } from '@/components/connect/recovery-phrase-dialog';
 import { Toaster } from 'sonner';
 
-import { toastError } from '@/lib/utils';
+import { QrScanner } from '@/components/wallet/qr-scanner';
+import { PasteActionBar } from '@/components/wallet/paste-action-bar';
+import { detectInput } from '@/lib/input-detect';
+import { receiveToken } from '@/cashu/wallet-ops';
+import { extractMintUrl } from '@/cashu/token-utils';
+
+import { toastError, toastSuccess } from '@/lib/utils';
 import { truncateMiddle } from '@/lib/utils';
 import { checkTokenSpent } from '@/cashu/wallet-ops';
 import { brand } from '@/lib/brand';
@@ -71,6 +77,7 @@ function WalletHome() {
   const [showSend, setShowSend] = useState(false);
   const [showReceive, setShowReceive] = useState(false);
   const [selectedMint, setSelectedMint] = useState<Mint | null>(null);
+  const [showScanner, setShowScanner] = useState(false);
 
   const hasMints = mints.length > 0;
 
@@ -170,6 +177,75 @@ function WalletHome() {
     return isSpent;
   }, [clearTransactionToken]);
 
+  /** Route a QR scan or paste result to the appropriate dialog/flow. */
+  const handleScanResult = useCallback((raw: string) => {
+    const detected = detectInput(raw);
+    switch (detected.type) {
+      case 'cashu-token':
+        setShowReceive(true);
+        // Process the token directly
+        (async () => {
+          try {
+            const mintUrl = extractMintUrl(detected.value);
+            if (!mintUrl) throw new Error('Could not determine mint URL from token');
+            const knownMint = mints.find(m => m.url === mintUrl);
+            const newProofs = await receiveToken(mintUrl, detected.value);
+            const totalReceived = newProofs.reduce((s, p) => s + p.amount, 0);
+            const contextId = knownMint?.contextId ?? '';
+            await storeNewProofsForMintUrl(contextId, newProofs, mintUrl);
+            await recordTransaction({
+              type   : 'receive',
+              amount : totalReceived,
+              unit   : 'sat',
+              mintUrl,
+              status : 'completed',
+            });
+            toastSuccess('Token received', `+${totalReceived} sat`);
+            setShowReceive(false);
+          } catch (err) {
+            toastError('Failed to receive token', err);
+          }
+        })();
+        break;
+      case 'lightning-invoice':
+        setShowWithdraw(true);
+        break;
+      case 'mint-url':
+        setShowAddMint(true);
+        break;
+      default:
+        toastError('Unrecognized QR code', new Error(
+          'Expected a Cashu token, Lightning invoice, or mint URL.',
+        ));
+        break;
+    }
+  }, [mints, storeNewProofsForMintUrl, recordTransaction]);
+
+  /** Reclaim an unclaimed sent token (NUT-07 reports all proofs UNSPENT). */
+  const handleReclaimToken = useCallback(async (tx: Transaction) => {
+    if (!tx.cashuToken) throw new Error('No token to reclaim');
+    const mintUrl = tx.mintUrl;
+    const newProofs = await receiveToken(mintUrl, tx.cashuToken, tx.unit);
+    const totalReclaimed = newProofs.reduce((s, p) => s + p.amount, 0);
+
+    const knownMint = mints.find(m => m.url === mintUrl);
+    const contextId = knownMint?.contextId ?? '';
+    await storeNewProofsForMintUrl(contextId, newProofs, mintUrl);
+
+    await recordTransaction({
+      type   : 'receive',
+      amount : totalReclaimed,
+      unit   : tx.unit,
+      mintUrl,
+      status : 'completed',
+      memo   : 'Reclaimed unclaimed token',
+    });
+
+    // Clear the bearer token from the original send transaction
+    clearTransactionToken(tx.id);
+    toastSuccess('Token reclaimed', `+${totalReclaimed} ${tx.unit}`);
+  }, [mints, storeNewProofsForMintUrl, recordTransaction, clearTransactionToken]);
+
   const handleDisconnect = async () => {
     try {
       await disconnect({ clearStorage: true });
@@ -259,6 +335,14 @@ function WalletHome() {
               disabled={!hasMints}
             />
 
+            <PasteActionBar
+              onCashuToken={(token) => handleScanResult(token)}
+              onLightningInvoice={() => setShowWithdraw(true)}
+              onMintUrl={() => setShowAddMint(true)}
+              onScanQr={() => setShowScanner(true)}
+              disabled={!hasMints}
+            />
+
             <MintListCard
               mints={mints}
               mintBalances={mintBalances}
@@ -269,6 +353,7 @@ function WalletHome() {
             <TransactionListCard
               transactions={transactions}
               onCheckTokenSpent={handleCheckTokenSpent}
+              onReclaimToken={handleReclaimToken}
             />
           </>
         )}
@@ -323,6 +408,12 @@ function WalletHome() {
           onClose={() => setShowReceive(false)}
           onProofsReceived={storeNewProofsForMintUrl}
           onTransactionCreated={recordTransaction}
+        />
+      )}
+      {showScanner && (
+        <QrScanner
+          onScan={(value) => { setShowScanner(false); handleScanResult(value); }}
+          onClose={() => setShowScanner(false)}
         />
       )}
     </div>

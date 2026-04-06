@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Loader2Icon, XIcon, ZapIcon, CopyIcon, CheckIcon, ChevronDownIcon } from 'lucide-react';
 import { toastError, toastSuccess, truncateMintUrl } from '@/lib/utils';
 import { createMintQuote, checkMintQuote, mintTokens } from '@/cashu/wallet-ops';
+import { startMintQuotePolling } from '@/lib/mint-quote-poller';
 import { QRCodeDisplay } from '@/components/qr-code';
 import type { Mint } from '@/hooks/use-wallet';
 import type { Proof } from '@cashu/cashu-ts';
@@ -85,7 +86,7 @@ export const DepositDialog: React.FC<DepositDialogProps> = ({
   const [errorMsg, setErrorMsg] = useState('');
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval>>();
+  const stopPollingRef = useRef<(() => void) | undefined>();
   const busyRef = useRef(false);
   // Track whether we're still mounted
   const mountedRef = useRef(true);
@@ -94,7 +95,7 @@ export const DepositDialog: React.FC<DepositDialogProps> = ({
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      if (pollRef.current) clearInterval(pollRef.current);
+      stopPollingRef.current?.();
     };
   }, []);
 
@@ -116,47 +117,55 @@ export const DepositDialog: React.FC<DepositDialogProps> = ({
       const mintUnit = selectedMint.unit;
       const mintCtx = selectedMint.contextId;
       const quoteId = quote.quote;
+      const quoteExpiry = quote.expiry ?? null;
 
       // Start polling for payment
-      pollRef.current = setInterval(async () => {
-        try {
-          const status = await checkMintQuote(mintUrl, quoteId, mintUnit);
-          if (!mountedRef.current) {
-            clearInterval(pollRef.current);
-            return;
-          }
-          if (status.state === 'PAID') {
-            clearInterval(pollRef.current);
-            setStep('waiting');
-
-            try {
-              const proofs = await mintTokens(mintUrl, amountNum, quoteId, mintUnit);
-              if (!mountedRef.current) return;
-              await onProofsReceived(mintCtx, proofs);
-              await onTransactionCreated({
-                type: 'mint',
-                amount: amountNum,
-                unit: mintUnit,
-                mintUrl,
-                status: 'completed',
-                memo: 'Lightning deposit',
-              });
-
-              if (mountedRef.current) {
-                setStep('done');
-                toastSuccess('Deposit complete', `${amountNum} ${mintUnit} minted`);
-              }
-            } catch (err) {
-              if (mountedRef.current) {
-                setErrorMsg(err instanceof Error ? err.message : 'Failed to mint tokens');
-                setStep('error');
-              }
+      stopPollingRef.current = startMintQuotePolling({
+        check: () => checkMintQuote(mintUrl, quoteId, mintUnit).then(s => ({
+          state  : s.state as 'UNPAID' | 'PAID' | 'ISSUED',
+          expiry : s.expiry ?? null,
+        })),
+        onPaid: async () => {
+          if (!mountedRef.current) return;
+          setStep('waiting');
+          try {
+            const proofs = await mintTokens(mintUrl, amountNum, quoteId, mintUnit);
+            if (!mountedRef.current) return;
+            await onProofsReceived(mintCtx, proofs);
+            await onTransactionCreated({
+              type   : 'mint',
+              amount : amountNum,
+              unit   : mintUnit,
+              mintUrl,
+              status : 'completed',
+              memo   : 'Lightning deposit',
+            });
+            if (mountedRef.current) {
+              setStep('done');
+              toastSuccess('Deposit complete', `${amountNum} ${mintUnit} minted`);
+            }
+          } catch (err) {
+            if (mountedRef.current) {
+              setErrorMsg(err instanceof Error ? err.message : 'Failed to mint tokens');
+              setStep('error');
             }
           }
-        } catch {
-          // Quote check failed, keep polling
-        }
-      }, 3000);
+        },
+        onExpired: () => {
+          if (mountedRef.current) {
+            setErrorMsg('The deposit invoice has expired. Please create a new one.');
+            setStep('error');
+          }
+        },
+        onIssued: () => {
+          if (mountedRef.current) {
+            setErrorMsg('These tokens were already minted (possibly in another session).');
+            setStep('error');
+          }
+        },
+        isActive : () => mountedRef.current,
+        expiry   : quoteExpiry,
+      });
     } catch (err) {
       toastError('Failed to create deposit', err);
     } finally {
