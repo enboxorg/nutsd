@@ -4,6 +4,7 @@ import { toastError, toastSuccess, formatAmount } from '@/lib/utils';
 import { acquireWalletLock } from '@/lib/wallet-mutex';
 import { analyzeProofs, type ProofAnalysis } from '@/cashu/proof-utils';
 import { swapProofs } from '@/cashu/wallet-ops';
+import { DialogWrapper } from '@/components/ui/dialog-wrapper';
 import type { Mint, StoredProof } from '@/hooks/use-wallet';
 import type { Proof } from '@cashu/cashu-ts';
 import type { TransactionData } from '@/protocol/cashu-wallet-protocol';
@@ -96,16 +97,18 @@ export const SwapConsolidateDialog: React.FC<SwapConsolidateDialogProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-card border border-border p-6 rounded-xl shadow-xl max-w-sm w-full space-y-4">
+    <DialogWrapper open={true} onClose={onClose} preventClose={loading}>
+      <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <BarChart3Icon className="h-5 w-5 text-primary" />
             <h3 className="text-lg font-semibold">Proof Management</h3>
           </div>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
-            <XIcon className="h-4 w-4" />
-          </button>
+          {!loading && (
+            <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
+              <XIcon className="h-4 w-4" />
+            </button>
+          )}
         </div>
 
         {/* Current state */}
@@ -184,6 +187,6 @@ export const SwapConsolidateDialog: React.FC<SwapConsolidateDialogProps> = ({
           </div>
         )}
       </div>
-    </div>
+    </DialogWrapper>
   );
 };

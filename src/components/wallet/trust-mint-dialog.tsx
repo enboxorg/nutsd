@@ -54,16 +54,18 @@ export const TrustMintDialog: React.FC<TrustMintDialogProps> = ({
   };
 
   return (
-    <DialogWrapper open={true} onClose={onCancel}>
+    <DialogWrapper open={true} onClose={onCancel} preventClose={loading}>
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <ShieldAlertIcon className="h-5 w-5 text-[var(--color-warning)]" />
             <h3 className="text-lg font-semibold">Unknown Mint</h3>
           </div>
-          <button onClick={onCancel} className="text-muted-foreground hover:text-foreground">
-            <XIcon className="h-4 w-4" />
-          </button>
+          {!loading && (
+            <button onClick={onCancel} className="text-muted-foreground hover:text-foreground">
+              <XIcon className="h-4 w-4" />
+            </button>
+          )}
         </div>
 
         <div className="space-y-2">

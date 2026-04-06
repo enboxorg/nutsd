@@ -168,16 +168,18 @@ export const SendToDIDDialog: React.FC<SendToDIDDialogProps> = ({
   };
 
   return (
-    <DialogWrapper open={true} onClose={onClose}>
+    <DialogWrapper open={true} onClose={onClose} preventClose={step === 'sending'}>
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <UsersIcon className="h-5 w-5 text-primary" />
             <h3 className="text-lg font-semibold">Send to DID</h3>
           </div>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
-            <XIcon className="h-4 w-4" />
-          </button>
+          {step !== 'sending' && (
+            <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
+              <XIcon className="h-4 w-4" />
+            </button>
+          )}
         </div>
 
         {step === 'recipient' && (
