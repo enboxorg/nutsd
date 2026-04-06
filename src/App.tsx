@@ -118,6 +118,7 @@ function WalletHome() {
   const [showSettings, setShowSettings] = useState(false);
   const [showPayRequest, setShowPayRequest] = useState<string | null>(null);
   const [showCreateRequest, setShowCreateRequest] = useState(false);
+  const [trustBusy, setTrustBusy] = useState(false);
   const [trustMintState, setTrustMintState] = useState<{
     mintUrl: string;
     amount: number;
@@ -231,6 +232,7 @@ function WalletHome() {
       toastError('Wallet busy', new Error('Another wallet operation is in progress.'));
       return;
     }
+    setTrustBusy(true);
     try {
       // Add the mint
       const newMint = await addMint({ url: trustMintState.mintUrl, unit: trustMintState.unit, active: true });
@@ -251,6 +253,7 @@ function WalletHome() {
     } catch (err) {
       toastError('Failed to receive', err);
     } finally {
+      setTrustBusy(false);
       releaseLock?.();
       setTrustMintState(null);
     }
@@ -267,6 +270,7 @@ function WalletHome() {
       toastError('Wallet busy', new Error('Another wallet operation is in progress.'));
       return;
     }
+    setTrustBusy(true);
     try {
       // Receive the token at the foreign mint using a TRANSIENT wallet.
       // We do NOT add the foreign mint to the DWN — that's the whole point of
@@ -306,6 +310,7 @@ function WalletHome() {
             'Lightning payment sent. Waiting for trusted mint to detect payment. ' +
             'The swap will resume automatically on next startup.'
           ));
+          setTrustBusy(false);
           setTrustMintState(null);
           return;
         }
@@ -333,6 +338,7 @@ function WalletHome() {
     } catch (err) {
       toastError('Swap failed', err);
     } finally {
+      setTrustBusy(false);
       releaseLock?.();
       setTrustMintState(null);
     }
@@ -780,9 +786,10 @@ function WalletHome() {
           unit={trustMintState.unit}
           defaultMint={orderedMints[0]}
           mints={orderedMints}
+          busy={trustBusy}
           onTrustAndClaim={handleTrustAndClaim}
           onSwapToMint={handleSwapToMint}
-          onCancel={() => setTrustMintState(null)}
+          onCancel={() => { if (!trustBusy) setTrustMintState(null); }}
         />
       )}
       {showPayRequest && (
