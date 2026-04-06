@@ -144,6 +144,61 @@ export function selectProofs(
   return { selected, remaining, change };
 }
 
+/**
+ * Select proofs accounting for NUT-02 input fees.
+ *
+ * The total cost is `targetAmount + inputFee`, but the input fee depends on
+ * how many proofs are selected — creating a circular dependency. This function
+ * iterates until the selection stabilizes (usually 1-2 rounds).
+ *
+ * @param proofs - Available proofs (unspent)
+ * @param targetAmount - Desired send/melt amount (excluding fees)
+ * @param feePpk - Input fee rate in parts per thousand (NUT-02)
+ * @returns Selected proofs, remaining proofs, change amount, and computed fee
+ */
+export function selectProofsWithFees(
+  proofs: Proof[],
+  targetAmount: number,
+  feePpk: number,
+): { selected: Proof[]; remaining: Proof[]; change: number; fee: number } {
+  if (feePpk <= 0) {
+    const result = selectProofs(proofs, targetAmount);
+    return { ...result, fee: 0 };
+  }
+
+  const sorted = [...proofs].sort((a, b) => b.amount - a.amount);
+  const total = sorted.reduce((sum, p) => sum + p.amount, 0);
+
+  // Iterative: select, compute fee, check if we have enough, re-select
+  let currentTarget = targetAmount;
+  let fee = 0;
+  let result: ReturnType<typeof selectProofs>;
+
+  for (let i = 0; i < 10; i++) { // max 10 iterations (safety bound)
+    if (total < currentTarget) {
+      throw new Error(`Insufficient balance: have ${total}, need ${currentTarget} (including ${fee} fee)`);
+    }
+    result = selectProofs(sorted, currentTarget);
+    fee = Math.max(0, Math.ceil(result.selected.length * feePpk / 1000));
+    const neededTotal = targetAmount + fee;
+
+    if (sumProofs(result.selected) >= neededTotal) {
+      // We have enough including fees
+      return {
+        selected  : result.selected,
+        remaining : result.remaining,
+        change    : sumProofs(result.selected) - neededTotal,
+        fee,
+      };
+    }
+    // Need more — increase target and re-select
+    currentTarget = neededTotal;
+  }
+
+  // Should not reach here, but satisfy TypeScript
+  throw new Error(`Fee calculation did not converge for amount ${targetAmount} with feePpk ${feePpk}`);
+}
+
 /** Calculate total amount from a set of proofs. */
 export function sumProofs(proofs: Proof[]): number {
   return proofs.reduce((sum, p) => sum + p.amount, 0);

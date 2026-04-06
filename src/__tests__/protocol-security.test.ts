@@ -59,6 +59,38 @@ describe('CashuWalletDefinition security', () => {
   });
 });
 
+describe('ProofData state field', () => {
+  it('ProofState type allows unspent and pending', () => {
+    // Type-level assertion: ProofState = 'unspent' | 'pending' | 'spent'
+    // The protocol type only uses unspent and pending; spent proofs are deleted
+    const validStates: import('../protocol/cashu-wallet-protocol').ProofState[] = [
+      'unspent',
+      'pending',
+      'spent',
+    ];
+    expect(validStates).toHaveLength(3);
+    expect(validStates).toContain('unspent');
+    expect(validStates).toContain('pending');
+    expect(validStates).toContain('spent');
+  });
+
+  it('state field is optional in ProofData (backward compat)', () => {
+    // ProofData.state is `state?: ProofState` — optional for records
+    // written before state tracking. The hook defaults to 'unspent'.
+    const proofWithoutState: import('../protocol/cashu-wallet-protocol').ProofData = {
+      amount: 4, id: 'abc', secret: 'sec', C: '02',
+    };
+    expect(proofWithoutState.state).toBeUndefined();
+  });
+
+  it('state field can be set in ProofData', () => {
+    const proof = {
+      amount: 4, id: 'abc', secret: 'sec', C: '02', state: 'pending' as const,
+    } satisfies import('../protocol/cashu-wallet-protocol').ProofData;
+    expect(proof.state).toBe('pending');
+  });
+});
+
 describe('CashuTransferProtocol safety', () => {
   it('assertTransferProtocolDisabled throws', () => {
     expect(() => assertTransferProtocolDisabled()).toThrow('cashu-transfer protocol is disabled');

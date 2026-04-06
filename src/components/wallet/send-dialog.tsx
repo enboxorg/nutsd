@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react';
 import { Loader2Icon, XIcon, SendIcon, CopyIcon, CheckIcon } from 'lucide-react';
 import { toastError, toastSuccess, truncateMintUrl, formatAmount } from '@/lib/utils';
-import { swapProofs } from '@/cashu/wallet-ops';
+import { swapProofs, estimateInputFee } from '@/cashu/wallet-ops';
 import { encodeToken } from '@/cashu/token-utils';
 import type { Mint, StoredProof } from '@/hooks/use-wallet';
 import type { Proof } from '@cashu/cashu-ts';
@@ -11,10 +11,16 @@ interface SendDialogProps {
   mints: Mint[];
   mintBalances: Map<string, number>;
   getUnspentProofs: (mintUrl: string) => StoredProof[];
+  /** Map of keyset ID -> inputFeePpk for fee estimates. */
+  keysetFeeMap: Map<string, number>;
+  /** Max fee rate (ppk) per mint URL. */
+  mintFeePpk: Map<string, number>;
   onClose: () => void;
   onNewProofs: (mintContextId: string, proofs: Proof[]) => Promise<void>;
   /** Delete specific proof DWN records by their IDs. */
   onOldProofsSpent: (ids: string[]) => Promise<void>;
+  /** Mark proofs as pending in DWN before sending to mint. */
+  onMarkPending: (ids: string[]) => Promise<void>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
 }
 
@@ -24,9 +30,12 @@ export const SendDialog: React.FC<SendDialogProps> = ({
   mints,
   mintBalances,
   getUnspentProofs,
+  keysetFeeMap,
+  mintFeePpk,
   onClose,
   onNewProofs,
   onOldProofsSpent,
+  onMarkPending,
   onTransactionCreated,
 }) => {
   const [selectedMint, setSelectedMint] = useState<Mint | null>(mints[0] ?? null);
@@ -38,11 +47,22 @@ export const SendDialog: React.FC<SendDialogProps> = ({
   const busyRef = useRef(false);
 
   const balance = selectedMint ? (mintBalances.get(selectedMint.url) ?? 0) : 0;
+  const feePpk = selectedMint ? (mintFeePpk.get(selectedMint.url) ?? 0) : 0;
+
+  /** Estimate input fee for the current amount. */
+  const estimatedFee = (() => {
+    if (!selectedMint || !amount || feePpk <= 0) return 0;
+    const storedProofs = getUnspentProofs(selectedMint.url);
+    const cashuProofs: Proof[] = storedProofs.map(p => ({
+      amount: p.amount, id: p.keysetId, secret: p.secret, C: p.C,
+    }));
+    return estimateInputFee(cashuProofs, keysetFeeMap);
+  })();
 
   const handleSend = async () => {
     if (!selectedMint || !amount || busyRef.current) return;
     const amountNum = parseInt(amount, 10);
-    if (isNaN(amountNum) || amountNum <= 0 || amountNum > balance) return;
+    if (isNaN(amountNum) || amountNum <= 0 || amountNum + estimatedFee > balance) return;
 
     busyRef.current = true;
     setLoading(true);
@@ -56,11 +76,16 @@ export const SendDialog: React.FC<SendDialogProps> = ({
         ...(p.witness ? { witness: p.witness } : {}),
       }));
 
+      // CRASH SAFETY: Mark proofs as pending in the DWN BEFORE sending to the mint.
+      await onMarkPending(spentIds);
+
       // wallet.send() internally selects the optimal subset and returns:
       //   send: proofs totalling amountNum (to give to recipient)
       //   keep: change proofs (to store back)
+      // includeFees: true ensures input fees are accounted for
       const { send, keep } = await swapProofs(
         selectedMint.url, cashuProofs, amountNum, selectedMint.unit,
+        { includeFees: true },
       );
 
       const encodedToken = encodeToken(selectedMint.url, send, selectedMint.unit);
@@ -87,6 +112,7 @@ export const SendDialog: React.FC<SendDialogProps> = ({
 
       setStep('token');
     } catch (err) {
+      // On error, proofs are pending. reconcilePendingProofs() handles recovery.
       toastError('Failed to create token', err);
     } finally {
       setLoading(false);
@@ -156,9 +182,27 @@ export const SendDialog: React.FC<SendDialogProps> = ({
               />
             </div>
 
+            {/* Fee estimate */}
+            {amount && estimatedFee > 0 && (
+              <div className="p-2 rounded-lg bg-background border border-border space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Send amount</span>
+                  <span className="font-mono">{formatAmount(parseInt(amount) || 0)}</span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Input fee (NUT-02)</span>
+                  <span className="font-mono">{formatAmount(estimatedFee)}</span>
+                </div>
+                <div className="border-t border-border pt-1 flex justify-between text-xs font-medium">
+                  <span>Total cost</span>
+                  <span className="font-mono">{formatAmount((parseInt(amount) || 0) + estimatedFee)}</span>
+                </div>
+              </div>
+            )}
+
             <button
               onClick={handleSend}
-              disabled={!amount || loading || parseInt(amount) > balance}
+              disabled={!amount || loading || (parseInt(amount) || 0) + estimatedFee > balance}
               className="w-full px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               {loading && <Loader2Icon className="h-3 w-3 animate-spin" />}

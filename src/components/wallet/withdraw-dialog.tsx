@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react';
 import { Loader2Icon, XIcon, ArrowUpIcon } from 'lucide-react';
 import { toastError, toastSuccess, truncateMintUrl, formatAmount } from '@/lib/utils';
-import { createMeltQuote, meltTokens } from '@/cashu/wallet-ops';
+import { createMeltQuote, meltTokens, estimateInputFee } from '@/cashu/wallet-ops';
 import type { Mint, StoredProof } from '@/hooks/use-wallet';
 import type { Proof } from '@cashu/cashu-ts';
 import type { MeltQuoteBolt11Response } from '@/cashu/wallet-ops';
@@ -11,10 +11,16 @@ interface WithdrawDialogProps {
   mints: Mint[];
   mintBalances: Map<string, number>;
   getUnspentProofs: (mintUrl: string) => StoredProof[];
+  /** Map of keyset ID -> inputFeePpk for fee estimates. */
+  keysetFeeMap: Map<string, number>;
   onClose: () => void;
   onNewProofs: (mintContextId: string, proofs: Proof[]) => Promise<void>;
   /** Delete specific proof DWN records by their IDs. */
   onOldProofsSpent: (ids: string[]) => Promise<void>;
+  /** Mark proofs as pending in DWN before sending to mint. */
+  onMarkPending: (ids: string[]) => Promise<void>;
+  /** Revert proofs from pending back to unspent. */
+  onRevertToUnspent: (ids: string[]) => Promise<void>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
 }
 
@@ -24,9 +30,13 @@ export const WithdrawDialog: React.FC<WithdrawDialogProps> = ({
   mints,
   mintBalances,
   getUnspentProofs,
+  keysetFeeMap,
   onClose,
   onNewProofs,
   onOldProofsSpent,
+  onMarkPending,
+  // onRevertToUnspent not used here — melt leaves proofs pending for reconciliation
+  // because the Lightning payment may still settle after an apparent failure.
   onTransactionCreated,
 }) => {
   const [selectedMint, setSelectedMint] = useState<Mint | null>(mints[0] ?? null);
@@ -34,10 +44,12 @@ export const WithdrawDialog: React.FC<WithdrawDialogProps> = ({
   const [step, setStep] = useState<Step>('invoice');
   const [quoteAmount, setQuoteAmount] = useState(0);
   const [quoteFee, setQuoteFee] = useState(0);
+  const [inputFee, setInputFee] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
   const quoteRef = useRef<MeltQuoteBolt11Response | null>(null);
   const [loading, setLoading] = useState(false);
   const busyRef = useRef(false);
+  const pendingIdsRef = useRef<string[]>([]);
 
   const balance = selectedMint ? (mintBalances.get(selectedMint.url) ?? 0) : 0;
 
@@ -51,6 +63,15 @@ export const WithdrawDialog: React.FC<WithdrawDialogProps> = ({
       quoteRef.current = quote;
       setQuoteAmount(quote.amount);
       setQuoteFee(quote.fee_reserve);
+
+      // Estimate input fee based on all proofs we'll submit
+      const storedProofs = getUnspentProofs(selectedMint.url);
+      const cashuProofs: Proof[] = storedProofs.map(p => ({
+        amount: p.amount, id: p.keysetId, secret: p.secret, C: p.C,
+      }));
+      const estFee = estimateInputFee(cashuProofs, keysetFeeMap);
+      setInputFee(estFee);
+
       setStep('confirm');
     } catch (err) {
       toastError('Failed to get quote', err);
@@ -63,7 +84,7 @@ export const WithdrawDialog: React.FC<WithdrawDialogProps> = ({
   const handleMelt = async () => {
     if (!selectedMint || !quoteRef.current || busyRef.current) return;
 
-    const totalNeeded = quoteAmount + quoteFee;
+    const totalNeeded = quoteAmount + quoteFee + inputFee;
     if (totalNeeded > balance) {
       toastError('Insufficient balance', new Error(`Need ${totalNeeded} but have ${balance}`));
       return;
@@ -82,6 +103,12 @@ export const WithdrawDialog: React.FC<WithdrawDialogProps> = ({
         ...(p.witness ? { witness: p.witness } : {}),
       }));
 
+      // CRASH SAFETY: Mark proofs as pending in the DWN BEFORE sending to the mint.
+      // If the app crashes after this point, reconcilePendingProofs() on startup
+      // will check with the mint and resolve the state correctly.
+      await onMarkPending(spentIds);
+      pendingIdsRef.current = spentIds;
+
       const { paid, change } = await meltTokens(
         selectedMint.url, quoteRef.current, cashuProofs, selectedMint.unit,
       );
@@ -92,6 +119,7 @@ export const WithdrawDialog: React.FC<WithdrawDialogProps> = ({
           await onNewProofs(selectedMint.contextId, change);
         }
         await onOldProofsSpent(spentIds);
+        pendingIdsRef.current = [];
 
         await onTransactionCreated({
           type: 'melt',
@@ -105,18 +133,18 @@ export const WithdrawDialog: React.FC<WithdrawDialogProps> = ({
         setStep('done');
         toastSuccess('Withdrawal complete');
       } else {
-        // Payment not completed. Proofs may be PENDING at the mint.
-        // Do NOT delete them — they might still be spent if the
-        // Lightning payment settles later.
+        // Payment not completed. Proofs are PENDING at the mint.
+        // Do NOT revert — the Lightning payment may still settle.
+        // Leave as pending; reconcilePendingProofs() will resolve on next startup.
         setErrorMsg(
           'The Lightning payment was not completed. Your proofs may be temporarily locked by the mint. ' +
-          'Try checking your balance again in a few minutes.',
+          'They will be checked automatically when you reopen the wallet.',
         );
         setStep('error');
       }
     } catch (err) {
       // On error, proofs were submitted but we don't know their state.
-      // Leave them in DWN — user can check with NUT-07 later.
+      // Leave as pending — reconcilePendingProofs() handles recovery.
       setErrorMsg(err instanceof Error ? err.message : String(err));
       setStep('error');
     } finally {
@@ -188,12 +216,18 @@ export const WithdrawDialog: React.FC<WithdrawDialogProps> = ({
                 <span className="amount-display font-medium">{formatAmount(quoteAmount)}</span>
               </div>
               <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">Fee reserve</span>
+                <span className="text-muted-foreground">Lightning fee reserve</span>
                 <span className="amount-display font-medium">{formatAmount(quoteFee)}</span>
               </div>
+              {inputFee > 0 && (
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Input fee (NUT-02)</span>
+                  <span className="amount-display font-medium">{formatAmount(inputFee)}</span>
+                </div>
+              )}
               <div className="border-t border-border pt-2 flex justify-between text-sm font-semibold">
                 <span>Total</span>
-                <span className="amount-display">{formatAmount(quoteAmount + quoteFee)}</span>
+                <span className="amount-display">{formatAmount(quoteAmount + quoteFee + inputFee)}</span>
               </div>
             </div>
 

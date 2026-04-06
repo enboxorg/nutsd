@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 
 import { ThemeProvider, useTheme } from '@/components/theme-provider';
 import { ErrorBoundary } from '@/components/error-boundary';
@@ -31,6 +31,7 @@ import {
   LogOutIcon,
   MoonIcon,
   SunIcon,
+  AlertTriangleIcon,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -45,7 +46,11 @@ function WalletHome() {
     transactions,
     totalBalance,
     mintBalances,
+    mintFeePpk,
+    keysetFeeMap,
+    pendingProofCount,
     loading,
+    reconciling,
     addMint,
     removeMint,
     addProof,
@@ -53,6 +58,10 @@ function WalletHome() {
     addTransaction,
     clearTransactionToken,
     getUnspentProofsForMint,
+    markProofsPending,
+    revertProofsToUnspent,
+    reconcilePendingProofs,
+    proofs,
   } = useWallet();
 
   // Dialog state
@@ -65,6 +74,18 @@ function WalletHome() {
 
   const hasMints = mints.length > 0;
 
+  // --- Startup reconciliation ---
+  // Run once after initial proofs load. Checks all pending proofs with mints.
+  const reconciliationDone = useRef(false);
+  useEffect(() => {
+    if (!loading && proofs.length > 0 && !reconciliationDone.current) {
+      reconciliationDone.current = true;
+      reconcilePendingProofs().catch((err: unknown) =>
+        console.error('[nutsd] Startup reconciliation failed:', err),
+      );
+    }
+  }, [loading, proofs, reconcilePendingProofs]);
+
   // --- Proof persistence helpers ---
 
   /** Store Cashu proofs as DWN records. Preserves all fields (dleq, witness). */
@@ -75,6 +96,7 @@ function WalletHome() {
         id      : proof.id,
         secret  : proof.secret,
         C       : proof.C,
+        state   : 'unspent',
       };
       // Preserve optional NUT-12 DLEQ proof and NUT-10/11 witness
       if (proof.dleq) {
@@ -211,6 +233,18 @@ function WalletHome() {
           <div className="text-center text-muted-foreground py-12 text-sm">Loading wallet...</div>
         ) : (
           <>
+            {/* Pending proofs banner */}
+            {pendingProofCount > 0 && (
+              <div className="flex items-center gap-2 p-3 rounded-lg bg-[var(--color-warning)]/10 border border-[var(--color-warning)]/30 text-sm">
+                <AlertTriangleIcon className="h-4 w-4 text-[var(--color-warning)] shrink-0" />
+                <span className="text-muted-foreground">
+                  {reconciling
+                    ? `Checking ${pendingProofCount} pending proof(s) with mint...`
+                    : `${pendingProofCount} proof(s) in pending state — will be checked on next startup.`}
+                </span>
+              </div>
+            )}
+
             <BalanceCard
               totalBalance={totalBalance}
               unit="sat"
@@ -260,9 +294,12 @@ function WalletHome() {
           mints={mints}
           mintBalances={mintBalances}
           getUnspentProofs={getUnspentProofsForMint}
+          keysetFeeMap={keysetFeeMap}
           onClose={() => setShowWithdraw(false)}
           onNewProofs={storeNewProofs}
           onOldProofsSpent={removeProofsByIds}
+          onMarkPending={markProofsPending}
+          onRevertToUnspent={revertProofsToUnspent}
           onTransactionCreated={recordTransaction}
         />
       )}
@@ -271,9 +308,12 @@ function WalletHome() {
           mints={mints}
           mintBalances={mintBalances}
           getUnspentProofs={getUnspentProofsForMint}
+          keysetFeeMap={keysetFeeMap}
+          mintFeePpk={mintFeePpk}
           onClose={() => setShowSend(false)}
           onNewProofs={storeNewProofs}
           onOldProofsSpent={removeProofsByIds}
+          onMarkPending={markProofsPending}
           onTransactionCreated={recordTransaction}
         />
       )}
