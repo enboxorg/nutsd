@@ -45,9 +45,19 @@ export const CreateRequestDialog: React.FC<CreateRequestDialogProps> = ({ mints,
             {mints.length > 1 && (
               <div className="space-y-2">
                 <label className="text-xs text-muted-foreground">Accepted mint</label>
-                <select value={selectedMint?.url ?? ''} onChange={e => setSelectedMint(mints.find(m => m.url === e.target.value) ?? null)}
-                  className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm">
-                  {mints.map(m => <option key={m.url} value={m.url}>{m.name || truncateMintUrl(m.url)}</option>)}
+                <select
+                  value={selectedMint ? `${selectedMint.url}|${selectedMint.unit}` : ''}
+                  onChange={e => {
+                    const [url, unit] = e.target.value.split('|');
+                    setSelectedMint(mints.find(m => m.url === url && m.unit === unit) ?? null);
+                  }}
+                  className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm"
+                >
+                  {mints.map(m => (
+                    <option key={`${m.url}|${m.unit}`} value={`${m.url}|${m.unit}`}>
+                      {m.name || truncateMintUrl(m.url)} ({m.unit})
+                    </option>
+                  ))}
                 </select>
               </div>
             )}

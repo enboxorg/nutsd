@@ -50,11 +50,14 @@ export const PayRequestDialog: React.FC<PayRequestDialogProps> = ({
 
   // Find a mint that matches the request's accepted mints AND unit.
   // A single mint URL can appear multiple times with different units.
+  // Do NOT fall back to a mint with the wrong unit — that would create
+  // a token in the wrong denomination.
   const requestUnit = request.unit ?? 'sat';
   const matchingMint = request.mints?.length
+    // Request specifies accepted mints: match by URL + unit. No fallback.
     ? mints.find(m => request.mints!.includes(m.url) && m.unit === requestUnit)
-      ?? mints.find(m => request.mints!.includes(m.url)) // fallback: URL match without unit
-    : mints.find(m => m.unit === requestUnit) ?? mints[0]; // No mint restriction — prefer matching unit
+    // No mint restriction: match by unit only.
+    : mints.find(m => m.unit === requestUnit);
 
   const [customAmount, setCustomAmount] = useState('');
   const isOpenAmount = !request.amount || request.amount <= 0;
