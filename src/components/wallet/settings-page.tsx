@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { XIcon, SettingsIcon, KeyIcon, CopyIcon, CheckIcon, LinkIcon } from 'lucide-react';
+import { XIcon, SettingsIcon, KeyIcon, CopyIcon, CheckIcon, LinkIcon, LockIcon, UnlockIcon } from 'lucide-react';
 import { toastSuccess, truncateMintUrl } from '@/lib/utils';
 import { ExportIdentityDialog } from '@/components/connect/export-identity-dialog';
+import { PinScreen } from '@/components/connect/pin-screen';
 import type { Mint, WalletPreferences } from '@/hooks/use-wallet';
 import type { P2pkKeyPair } from '@/cashu/p2pk';
 
@@ -12,6 +13,12 @@ interface SettingsPageProps {
   mints: Mint[];
   preferences: WalletPreferences;
   p2pkKey: P2pkKeyPair | null;
+  /** Whether PIN lock is currently enabled. */
+  isPinEnabled: boolean;
+  /** Enable PIN lock with the given PIN. */
+  onSetPin: (pin: string) => Promise<void>;
+  /** Disable PIN lock. */
+  onRemovePin: () => void;
   onUpdatePreferences: (prefs: WalletPreferences) => Promise<void>;
   onClose: () => void;
 }
@@ -22,6 +29,9 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   mints,
   preferences,
   p2pkKey,
+  isPinEnabled,
+  onSetPin,
+  onRemovePin,
   onUpdatePreferences,
   onClose,
 }) => {
@@ -30,6 +40,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   // const [displayCurrency, setDisplayCurrency] = useState(preferences.displayCurrency ?? 'sat');
   const [copied, setCopied] = useState<string | null>(null);
   const [showExportDialog, setShowExportDialog] = useState(false);
+  const [showPinSetup, setShowPinSetup] = useState(false);
 
   const handleSave = async () => {
     await onUpdatePreferences({
@@ -120,6 +131,41 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
           )}
         </section>
 
+        {/* Security — optional PIN lock */}
+        <section className="space-y-2">
+          <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Security</h3>
+          {isPinEnabled ? (
+            <div className="flex items-center gap-3 p-3 rounded-lg bg-card border border-border">
+              <LockIcon className="h-4 w-4 text-primary shrink-0" />
+              <div className="flex-1">
+                <div className="text-sm font-medium">PIN Lock Enabled</div>
+                <div className="text-xs text-muted-foreground">
+                  Wallet locks automatically after 5 minutes of inactivity
+                </div>
+              </div>
+              <button
+                onClick={onRemovePin}
+                className="text-xs text-red-400 hover:text-red-300 transition-colors px-2 py-1 rounded hover:bg-red-500/10"
+              >
+                Remove
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowPinSetup(true)}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-lg bg-card border border-border text-left hover:bg-muted transition-colors"
+            >
+              <UnlockIcon className="h-4 w-4 text-muted-foreground shrink-0" />
+              <div>
+                <div className="text-sm font-medium">Enable PIN Lock</div>
+                <div className="text-xs text-muted-foreground">
+                  Set a 6-digit PIN to protect your wallet from unauthorized access
+                </div>
+              </div>
+            </button>
+          )}
+        </section>
+
         {/* Connect Wallet — only shown for local (non-delegate) sessions */}
         {did && !isDelegateSession && (
           <section className="space-y-2">
@@ -152,6 +198,27 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
         open={showExportDialog}
         onClose={() => setShowExportDialog(false)}
       />
+
+      {/* PIN setup overlay */}
+      {showPinSetup && (
+        <div className="fixed inset-0 z-50 bg-background">
+          <PinScreen
+            mode="setup"
+            onSubmit={async (pin) => {
+              await onSetPin(pin);
+              setShowPinSetup(false);
+              toastSuccess('PIN lock enabled');
+              return true;
+            }}
+          />
+          <button
+            onClick={() => setShowPinSetup(false)}
+            className="absolute top-4 right-4 text-muted-foreground hover:text-foreground p-2"
+          >
+            <XIcon className="h-5 w-5" />
+          </button>
+        </div>
+      )}
     </div>
   );
 };
