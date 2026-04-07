@@ -1,5 +1,8 @@
 import { useState } from 'react';
 import { XIcon, SettingsIcon, KeyIcon, CopyIcon, CheckIcon, LinkIcon, LockIcon, UnlockIcon } from 'lucide-react';
+
+/** Injected at build time by Vite's `define` in vite.config.ts. */
+declare const __ENBOX_SDK_VERSION__: string;
 import { toastSuccess, truncateMintUrl } from '@/lib/utils';
 import { ExportIdentityDialog } from '@/components/connect/export-identity-dialog';
 import { PinScreen } from '@/components/connect/pin-screen';
@@ -192,6 +195,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
         >
           Save Settings
         </button>
+
+        <p className="mt-6 text-center text-[10px] text-muted-foreground/50">
+          SDK: @enbox/browser@{__ENBOX_SDK_VERSION__}
+        </p>
       </main>
 
       <ExportIdentityDialog
