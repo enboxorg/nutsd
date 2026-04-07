@@ -44,8 +44,14 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({ open, onClose }) => 
       await connectWallet();
       onClose();
     } catch (error) {
-      toastError('Failed to connect wallet', error);
-      setState('init');
+      const msg = (error as Error).message || '';
+      // Denial / cancellation — just go back to the modal, no error toast.
+      if (msg.includes('denied') || msg.includes('cancelled')) {
+        setState('init');
+      } else {
+        toastError('Failed to connect wallet', error);
+        setState('init');
+      }
     }
   };
 

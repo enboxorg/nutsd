@@ -95,8 +95,15 @@ export const QRConnectDialog: React.FC<QRConnectDialogProps> = ({ onBack, onClos
       }
     } catch (err) {
       if (!abortRef.current) {
-        setErrorMessage((err as Error).message || 'Connection failed.');
-        setPhase('error');
+        const msg = (err as Error).message || 'Connection failed.';
+        // If the wallet explicitly denied, go back to the connect modal
+        // instead of showing a scary error screen.
+        if (msg.includes('denied by the wallet')) {
+          onBack();
+        } else {
+          setErrorMessage(msg);
+          setPhase('error');
+        }
       }
     }
   }, [auth, applySession, onClose]);

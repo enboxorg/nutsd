@@ -1,17 +1,23 @@
+import fs from "fs";
 import path from "path";
 
-//@ts-expect-error - no types available
+// @ts-expect-error - no types available
 import nodePolyfills from "vite-plugin-node-stdlib-browser";
 
 import { VitePWA } from "vite-plugin-pwa";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+const browserPkg = JSON.parse(
+  fs.readFileSync(path.resolve(__dirname, "node_modules/@enbox/browser/package.json"), "utf-8"),
+);
+
 // https://vitejs.dev/config/
 export default defineConfig({
   base: '/',
   define: {
-    global: "globalThis",
+    global                    : "globalThis",
+    '__ENBOX_SDK_VERSION__'   : JSON.stringify(browserPkg.version),
   },
   plugins: [
     nodePolyfills(),
