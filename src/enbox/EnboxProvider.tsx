@@ -130,6 +130,14 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             onSuccess      : () => console.log('[nutsd] DWN registration complete'),
             onFailure      : (err) => console.warn('[nutsd] DWN registration failed:', err),
             persistTokens  : true,
+            onProviderAuthRequired: async (params) => {
+              // The DWN server's provider-auth endpoint auto-approves and
+              // returns { code, state } as JSON — no popup or user
+              // interaction needed.
+              const res = await fetch(params.authorizeUrl);
+              const data = await res.json();
+              return { code: data.code, state: data.state };
+            },
           },
           connectHandler : BrowserConnectHandler({
             wallets : walletOptions,
