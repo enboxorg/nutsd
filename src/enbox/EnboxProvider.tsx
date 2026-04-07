@@ -8,23 +8,8 @@ import { brand } from '@/lib/brand';
 
 // Protocol is auto-configured via repository().configure() in use-wallet.ts
 
-/**
- * Minimal protocol definition for the DWN permissions protocol.
- *
- * The sync engine needs Messages.Read (which covers MessagesSync and
- * MessagesSubscribe) scoped to this protocol to sync permission grant
- * records between the local and remote DWN. Without it, delegate
- * sessions fail to sync and protocol operations can hang.
- */
-const DWN_PERMISSIONS_PROTOCOL = {
-  protocol  : 'https://identity.foundation/dwn/permissions',
-  published : true,
-  types     : {},
-  structure : {},
-};
-
 /** All protocol definitions this dapp needs permissions for. */
-const DAPP_PROTOCOLS = [CashuWalletDefinition, CashuTransferDefinition, DWN_PERMISSIONS_PROTOCOL];
+const DAPP_PROTOCOLS = [CashuWalletDefinition, CashuTransferDefinition];
 
 /** DWN endpoints that new identities register with and sync to. */
 const DWN_ENDPOINTS = [
