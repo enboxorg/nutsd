@@ -100,7 +100,9 @@ export const SendToDIDDialog: React.FC<SendToDIDDialogProps> = ({
 
       const encodedToken = encodeToken(selectedMint.url, send, selectedMint.unit);
 
-      // Validate P2PK enforcement before writing
+      // Validate P2PK enforcement before writing.
+      // Pass raw proofs so validation doesn't need to decode the V4 token
+      // (which fails on short keyset IDs without the mint's keyset list).
       const transferData: TransferData = {
         token: encodedToken,
         amount: amountNum,
@@ -109,6 +111,7 @@ export const SendToDIDDialog: React.FC<SendToDIDDialogProps> = ({
         memo: memo.trim() || undefined,
         senderDid,
         recipientPubkey: recipientPubkey.trim(),
+        proofs: send,
       };
       assertP2PKLocked(transferData);
 
