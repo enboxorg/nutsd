@@ -6,6 +6,7 @@ import { acquireWalletLock } from '@/lib/wallet-mutex';
 import { subscribeToQuote } from '@/lib/mint-ws';
 import { extractMintUrl, isCashuToken, isP2pkLockedToken, parseToken } from '@/cashu/token-utils';
 import { receiveP2pkLocked } from '@/cashu/p2pk';
+import { isDleqValid } from '@/cashu/dleq-verify';
 import { QRCodeDisplay } from '@/components/qr-code';
 import { DialogWrapper } from '@/components/ui/dialog-wrapper';
 import type { Mint } from '@/hooks/use-wallet';
@@ -183,6 +184,13 @@ const TokenTab: React.FC<{
         newProofs = await receiveToken(mintUrl, trimmed);
       }
 
+      // NUT-12: Verify DLEQ proofs on received tokens
+      if (!isDleqValid(newProofs)) {
+        console.warn('[nutsd:financial] DLEQ verification failed on received proofs — mint may be misbehaving');
+        // Don't block the receive — DLEQ is optional per spec — but warn the user
+        toastError('Warning', new Error('Some proofs failed DLEQ verification. The mint may be misbehaving.'));
+      }
+
       const totalReceived = newProofs.reduce((s, p) => s + p.amount, 0);
       const contextId = knownMint?.contextId ?? '';
       await onProofsReceived(contextId, newProofs, mintUrl);
@@ -305,6 +313,9 @@ const LightningTab: React.FC<{
             try {
               const proofs = await mintTokens(mintUrl, amountNum, quoteId, mintUnit);
               if (!mountedRef.current) return;
+              if (!isDleqValid(proofs)) {
+                console.warn('[nutsd:financial] DLEQ verification failed on Lightning-minted proofs');
+              }
               await onProofsReceived(mintCtx, proofs, mintUrl);
               await onTransactionCreated({
                 type   : 'mint',

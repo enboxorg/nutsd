@@ -69,7 +69,7 @@ export const ExportIdentityDialog: React.FC<ExportIdentityDialogProps> = ({ open
               permissionRequests,
               appName          : brand.name,
               appIcon          : `${window.location.origin}/favicon.ico`,
-              portableIdentity : portable,
+              portableIdentity : portable as any, // Type mismatch: PortableIdentity vs PortableDid — will be fixed in @enbox/browser
             });
           },
         },

@@ -1321,6 +1321,39 @@ export function useWallet() {
   }, [repo]);
 
   // =========================================================================
+  // Background token sweep (NUT-07)
+  // =========================================================================
+  // Periodically check if sent tokens have been claimed. For each 'send' or
+  // 'p2p-send' transaction with a cashuToken, check if the token is spent.
+  // If so, clear the cashuToken field. Runs every 5 minutes.
+
+  useEffect(() => {
+    if (!repo || transactions.length === 0) return;
+    let cancelled = false;
+
+    const sweep = async () => {
+      const { checkTokenSpent } = await import('@/cashu/wallet-ops');
+      for (const tx of transactions) {
+        if (cancelled) break;
+        if (tx.type !== 'send' && tx.type !== 'p2p-send') continue;
+        if (!tx.cashuToken) continue;
+        try {
+          const isSpent = await checkTokenSpent(tx.cashuToken, tx.mintUrl, tx.unit);
+          if (isSpent === true) {
+            await clearTransactionToken(tx.id);
+          }
+        } catch { /* skip — mint may be offline */ }
+      }
+    };
+
+    const timer = setInterval(sweep, 5 * 60 * 1000); // 5 minutes
+    // Also run once after a delay (give initial load time to complete)
+    const initialTimer = setTimeout(sweep, 30_000);
+
+    return () => { cancelled = true; clearInterval(timer); clearTimeout(initialTimer); };
+  }, [repo, transactions, clearTransactionToken]);
+
+  // =========================================================================
   // Incoming P2P transfers
   // =========================================================================
 
