@@ -40,11 +40,14 @@ import { toastError, toastSuccess, formatAmount, truncateMintUrl } from '@/lib/u
 import { truncateMiddle } from '@/lib/utils';
 import { checkTokenSpent } from '@/cashu/wallet-ops';
 import { brand } from '@/lib/brand';
+import { usePinLock } from '@/hooks/use-pin-lock';
+import { PinScreen } from '@/components/connect/pin-screen';
 import type { Proof } from '@cashu/cashu-ts';
 import type { ProofData, MintData, TransactionData } from '@/protocol/cashu-wallet-protocol';
 import type { Mint, Transaction } from '@/hooks/use-wallet';
 import {
   LogOutIcon,
+  LockIcon,
   MoonIcon,
   SunIcon,
   AlertTriangleIcon,
@@ -59,7 +62,14 @@ import {
 // Wallet app (connected)
 // ---------------------------------------------------------------------------
 
-function WalletHome() {
+interface WalletHomeProps {
+  isPinEnabled: boolean;
+  onSetPin: (pin: string) => Promise<void>;
+  onRemovePin: () => void;
+  onLock: () => void;
+}
+
+function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeProps) {
   const { did, disconnect, enbox, isDelegateSession } = useEnbox();
   const { theme, setTheme } = useTheme();
   const {
@@ -523,6 +533,15 @@ function WalletHome() {
             >
               <SettingsIcon className="h-4 w-4" />
             </button>
+            {isPinEnabled && (
+              <button
+                onClick={onLock}
+                className="p-2 rounded-lg hover:bg-muted transition-colors text-muted-foreground"
+                title="Lock wallet"
+              >
+                <LockIcon className="h-4 w-4" />
+              </button>
+            )}
             <button
               onClick={handleDisconnect}
               className="p-2 rounded-lg hover:bg-muted transition-colors text-muted-foreground"
@@ -776,6 +795,9 @@ function WalletHome() {
           mints={mints}
           preferences={preferences}
           p2pkKey={p2pkKey}
+          isPinEnabled={isPinEnabled}
+          onSetPin={onSetPin}
+          onRemovePin={onRemovePin}
           onUpdatePreferences={updatePreferences}
           onClose={() => setShowSettings(false)}
         />
@@ -819,14 +841,31 @@ function WalletHome() {
 
 function AppContent() {
   const { isConnected, recoveryPhrase, clearRecoveryPhrase } = useEnbox();
+  const { isPinEnabled, isLocked, setPin, removePin, unlock, lock } = usePinLock();
 
+  // Not connected — show welcome/connect flow.
   if (!isConnected) {
     return <Welcome />;
   }
 
+  // Connected but locked — show PIN unlock screen.
+  if (isLocked) {
+    return (
+      <PinScreen
+        mode="unlock"
+        onSubmit={async (pin) => unlock(pin)}
+      />
+    );
+  }
+
   return (
     <>
-      <WalletHome />
+      <WalletHome
+        isPinEnabled={isPinEnabled}
+        onSetPin={setPin}
+        onRemovePin={removePin}
+        onLock={lock}
+      />
       {recoveryPhrase && (
         <RecoveryPhraseDialog
           phrase={recoveryPhrase}

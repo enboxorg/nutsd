@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeftIcon, Loader2Icon } from 'lucide-react';
 import QRCode from 'qrcode';
+import { normalizeProtocolRequests } from '@enbox/browser';
 import { useEnbox } from '@/enbox';
 import { CashuWalletDefinition } from '@/protocol/cashu-wallet-protocol';
+import { CashuTransferDefinition } from '@/protocol/cashu-transfer-protocol';
 import { brand } from '@/lib/brand';
 
 // Relay servers used for the cross-device connect flow (try first, fallback).
@@ -10,6 +12,9 @@ const RELAY_SERVERS = [
   'https://dev.aws.dwn.enbox.id',
   'https://enbox-dwn.fly.dev',
 ];
+
+/** All protocol definitions this dapp needs for QR connect. */
+const DAPP_PROTOCOLS = [CashuWalletDefinition, CashuTransferDefinition];
 
 interface QRConnectDialogProps {
   onBack: () => void;
@@ -22,9 +27,9 @@ type QRPhase = 'generating' | 'waiting' | 'pin' | 'connecting' | 'error';
  * QR code connect dialog for cross-device wallet connect.
  *
  * Uses the WalletConnect relay flow:
- * 1. Generates a connect URI → renders as QR code
- * 2. Wallet scans QR → creates delegate grants
- * 3. User enters PIN from wallet → session established
+ * 1. Generates a connect URI -> renders as QR code
+ * 2. Wallet scans QR -> creates delegate grants
+ * 3. User enters PIN from wallet -> session established
  *
  * Designed for future extraction to @enbox/react.
  */
@@ -48,68 +53,23 @@ export const QRConnectDialog: React.FC<QRConnectDialogProps> = ({ onBack, onClos
     abortRef.current = false;
     setPhase('generating');
 
-    // Build permission requests using WalletConnect helper.
-    // We import WalletConnect from @enbox/auth (re-exported via @enbox/browser).
-    let WalletConnect: any;
     try {
-      // Dynamic import to avoid bundling issues if auth isn't ready.
-      const authModule = await import('@enbox/auth');
-      WalletConnect = authModule.WalletConnect;
-    } catch {
-      // Fallback: use normalizeProtocolRequests.
-      const { normalizeProtocolRequests } = await import('@enbox/auth');
-      const requests = normalizeProtocolRequests([CashuWalletDefinition]);
-
-      try {
-        const session = await auth.walletConnect({
-          displayName      : brand.name,
-          connectServerUrl : RELAY_SERVERS[0],
-          permissionRequests: requests,
-          onWalletUriReady : async (uri: string) => {
-            const dataUrl = await QRCode.toDataURL(uri, {
-              width     : 280,
-              margin    : 2,
-              color     : { dark: '#ffffff', light: '#00000000' },
-              errorCorrectionLevel: 'M',
-            });
-            setQrDataUrl(dataUrl);
-            setPhase('waiting');
-          },
-          validatePin: () => new Promise<string>((resolve) => {
-            pinResolveRef.current = resolve;
-            setPhase('pin');
-          }),
-        });
-
-        if (!abortRef.current) {
-          applySession(session);
-          onClose();
-        }
-      } catch (err) {
-        if (!abortRef.current) {
-          setErrorMessage((err as Error).message || 'Connection failed.');
-          setPhase('error');
-        }
-      }
-      return;
-    }
-
-    // Primary path: use WalletConnect.createPermissionRequestForProtocol
-    try {
-      const permissionRequests = [
-        WalletConnect.createPermissionRequestForProtocol(CashuWalletDefinition),
-      ];
+      // Build agent-level permission requests from the dapp protocol
+      // definitions using normalizeProtocolRequests, which handles
+      // the ProtocolDefinition -> ConnectPermissionRequest conversion
+      // including default scopes (read, write, delete, query, subscribe, configure).
+      const permissionRequests = normalizeProtocolRequests(DAPP_PROTOCOLS);
 
       const session = await auth.walletConnect({
-        displayName      : brand.name,
-        connectServerUrl : RELAY_SERVERS[0],
+        displayName        : brand.name,
+        connectServerUrl   : RELAY_SERVERS[0],
         permissionRequests,
-        onWalletUriReady : async (uri: string) => {
+        onWalletUriReady   : async (uri: string) => {
           const dataUrl = await QRCode.toDataURL(uri, {
-            width     : 280,
-            margin    : 2,
-            color     : { dark: '#ffffff', light: '#00000000' },
-            errorCorrectionLevel: 'M',
+            width                : 280,
+            margin               : 2,
+            color                : { dark: '#ffffff', light: '#00000000' },
+            errorCorrectionLevel : 'M',
           });
           setQrDataUrl(dataUrl);
           setPhase('waiting');
