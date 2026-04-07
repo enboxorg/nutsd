@@ -13,8 +13,7 @@
   },
   "dependencies": {
     "@cashu/cashu-ts": "^3.6.2",
-    "@enbox/auth": "^0.6.26",
-    "@enbox/browser": "^0.3.4",
+    "@enbox/browser": "^0.3.5",
     "@enbox/dwn-sdk-js": "^0.3.3",
     "@radix-ui/react-dialog": "^1.1.1",
     "@radix-ui/react-dropdown-menu": "^2.1.1",
