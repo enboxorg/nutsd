@@ -41,7 +41,7 @@ export async function getWallet(mintUrl: string, unit = 'sat'): Promise<Wallet> 
   return wallet;
 }
 
-/** Clear the wallet cache (e.g. on disconnect). */
+/** Clear the entire wallet cache (e.g. on disconnect). */
 export function clearWalletCache(): void {
   walletCache.clear();
 }

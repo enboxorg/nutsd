@@ -69,13 +69,13 @@ export const SwapConsolidateDialog: React.FC<SwapConsolidateDialogProps> = ({
       // "keep" will typically be empty or contain fee change
       const allNewProofs = [...send, ...keep];
 
-      // Store new proofs, delete old
+      // CRITICAL: Persist new proofs and transaction BEFORE deleting old proofs.
+      // If we crash between the swap and cleanup, the new proofs are safe and
+      // the pending reconciliation will clean up the old ones on next startup.
       if (allNewProofs.length > 0) {
         await onNewProofs(mint.contextId, allNewProofs);
       }
-      await onOldProofsSpent(spentIds);
 
-      // Record the swap transaction
       await onTransactionCreated({
         type    : 'swap',
         amount  : totalAmount,
@@ -84,6 +84,9 @@ export const SwapConsolidateDialog: React.FC<SwapConsolidateDialogProps> = ({
         status  : 'completed',
         memo    : `Consolidated ${analysis.proofCount} proofs to ${allNewProofs.length}`,
       });
+
+      // Now safe to delete old proofs — new proofs are persisted.
+      await onOldProofsSpent(spentIds);
 
       setNewAnalysis(analyzeProofs(allNewProofs));
       setDone(true);

@@ -5,6 +5,22 @@
  * the mint's published keyset. This detects mint misbehavior (e.g., the
  * mint issuing proofs without corresponding backing).
  *
+ * LIMITATION: This module performs STRUCTURAL verification only — it
+ * checks that DLEQ fields (e, s, r) are present and well-formed hex
+ * strings, but does NOT perform the full cryptographic verification
+ * (checking the discrete log equality proof against the mint's public
+ * key). A malicious mint could include structurally valid but
+ * cryptographically invalid DLEQ data that passes these checks.
+ *
+ * Full cryptographic verification requires computing:
+ *   e' = hash(R1 || R2 || K || C')
+ * where R1 = s*G - e*K, R2 = s*hash_to_curve(x) - e*C'
+ * and verifying e' === e. This requires the secp256k1 point operations
+ * from the mint's keyset public keys, which aren't always available.
+ *
+ * TODO: Implement full NUT-12 cryptographic verification when the mint's
+ * keyset public keys are reliably cached.
+ *
  * @module
  */
 
