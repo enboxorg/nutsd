@@ -135,10 +135,15 @@ export function subscribeToQuote({
       if (disposed || settled) return;
       try {
         const msg = JSON.parse(event.data);
-        // NUT-17 notification format
-        const payload = msg.params ?? msg.result;
-        if (!payload) return;
+        // NUT-17 notification format:
+        // {"jsonrpc":"2.0","method":"subscribe","params":{"subId":"...","payload":{"state":"PAID",...}}}
+        // Subscription ACK: {"jsonrpc":"2.0","result":{"status":"OK",...},"id":1}
+        const params = msg.params ?? msg.result;
+        if (!params) return;
 
+        // The actual quote data is nested in params.payload (NUT-17 spec).
+        // Fall back to params directly for backward compat with older mints.
+        const payload = params.payload ?? params;
         const state = payload.state ?? payload.status;
         if (state === 'PAID') {
           settled = true;
