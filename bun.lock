@@ -6,8 +6,7 @@
       "name": "@enbox/nutsd",
       "dependencies": {
         "@cashu/cashu-ts": "^3.6.2",
-        "@enbox/auth": "^0.6.25",
-        "@enbox/browser": "^0.3.2",
+        "@enbox/browser": "^0.3.4",
         "@enbox/dwn-sdk-js": "^0.3.3",
         "@radix-ui/react-dialog": "^1.1.1",
         "@radix-ui/react-dropdown-menu": "^2.1.1",
@@ -284,11 +283,11 @@
 
     "@enbox/agent": ["@enbox/agent@0.6.4", "", { "dependencies": { "@enbox/common": "0.1.0", "@enbox/crypto": "0.1.0", "@enbox/dids": "0.1.0", "@enbox/dwn-clients": "0.3.1", "@enbox/dwn-sdk-js": "0.3.3", "@scure/bip39": "1.2.2", "abstract-level": "1.0.4", "ed25519-keygen": "0.4.11", "level": "8.0.1", "ms": "2.1.3", "ulidx": "2.1.0" } }, "sha512-Q1MBAewY5sFbbia9QuMPLTyBtCFS5tVIb9A0aQMmTSLXzFJWZwtmcf6IY4RpMPUuO42HECsBtumiO4wOfLOzmQ=="],
 
-    "@enbox/api": ["@enbox/api@0.6.16", "", { "dependencies": { "@enbox/agent": "0.6.4", "@enbox/auth": "0.6.24", "@enbox/common": "0.1.0", "@enbox/dwn-clients": "0.3.1" } }, "sha512-WI1e7OzDCgiGxjKR9tbQ81goznQBwNNnf2yd6ZVZHdQaehWvT1hOEGC3HBVv0clAecyGV42uEwXHKnEBcGmL2A=="],
+    "@enbox/api": ["@enbox/api@0.6.18", "", { "dependencies": { "@enbox/agent": "0.6.4", "@enbox/auth": "0.6.26", "@enbox/common": "0.1.0", "@enbox/dwn-clients": "0.3.1" } }, "sha512-od4TxOFryV/zW6mecSVbzH0zt4C1FriNCJ/UZ+XdkE/j4oYxVnixadE95fpknshGiQIYz6jlmGW32DOGGW1+Ag=="],
 
-    "@enbox/auth": ["@enbox/auth@0.6.25", "", { "dependencies": { "@enbox/agent": "0.6.4", "@enbox/common": "0.1.0", "@enbox/crypto": "0.1.0", "@enbox/dids": "0.1.0", "@enbox/dwn-clients": "0.3.1", "@enbox/dwn-sdk-js": "0.3.3", "level": "8.0.1" } }, "sha512-ovS6PZ7s4HXXD1hC01yLqsPCa8yW5XxyP2XtklIlQEEYbuoNiYVgT6QRpZXaWiL2aohibqhzABwSIY3CsR1X1Q=="],
+    "@enbox/auth": ["@enbox/auth@0.6.26", "", { "dependencies": { "@enbox/agent": "0.6.4", "@enbox/common": "0.1.0", "@enbox/crypto": "0.1.0", "@enbox/dids": "0.1.0", "@enbox/dwn-clients": "0.3.1", "@enbox/dwn-sdk-js": "0.3.3", "level": "8.0.1" } }, "sha512-/w27kRallVPgiJSiGzApJoga6o0ALaHGKVGXx/WmpaDRILVA95TS281gDrLhxOSQTzpCc35CikiKRdgKMTIwyw=="],
 
-    "@enbox/browser": ["@enbox/browser@0.3.2", "", { "dependencies": { "@enbox/agent": "0.6.4", "@enbox/api": "0.6.16", "@enbox/auth": "0.6.24", "@enbox/dids": "0.1.0" } }, "sha512-pgo8tyEN0kvkNJHCfoWBgOQeXPFx42MIpdq/lf8FL3XZBMuqWHymgbUfDa0x0MDi2MKsg7ZlfAVyAnh0SbqlRA=="],
+    "@enbox/browser": ["@enbox/browser@0.3.4", "", { "dependencies": { "@enbox/agent": "0.6.4", "@enbox/api": "0.6.18", "@enbox/auth": "0.6.26", "@enbox/dids": "0.1.0" } }, "sha512-gmEte8CGwRp5nq2UTYLzBE+OSX5L49VkUIKKrkXEGMdqPd9vV8YRjTmeMsK8fHgxjnZRrCcR41neJ05hqPkJJQ=="],
 
     "@enbox/common": ["@enbox/common@0.1.0", "", { "dependencies": { "@isaacs/ttlcache": "1.4.1", "level": "8.0.1", "multiformats": "11.0.2" } }, "sha512-rb4Fpz+vrPhDCFm93DfufV1PMztzNRztVeY/4DkXd0mUY3/5AE5EsCChmGL042m1GDlUtUL8O0jcOt+Zg5VbSA=="],
 
@@ -1847,10 +1846,6 @@
     "@decentralized-identity/ion-sdk/@noble/secp256k1": ["@noble/secp256k1@2.3.0", "", {}, "sha512-0TQed2gcBbIrh7Ccyw+y/uZQvbJwm7Ao4scBUxqpBCcsOlZG0O4KGfjtNAy/li4W8n1xt3dxrwJ0beZ2h2G6Kw=="],
 
     "@decentralized-identity/ion-sdk/multiformats": ["multiformats@12.1.3", "", {}, "sha512-eajQ/ZH7qXZQR2AgtfpmSMizQzmyYVmCql7pdhldPuYQi4atACekbJaQplk6dWyIi10jCaFnd6pqvcEFXjbaJw=="],
-
-    "@enbox/api/@enbox/auth": ["@enbox/auth@0.6.24", "", { "dependencies": { "@enbox/agent": "0.6.4", "@enbox/common": "0.1.0", "@enbox/crypto": "0.1.0", "@enbox/dids": "0.1.0", "@enbox/dwn-clients": "0.3.1", "@enbox/dwn-sdk-js": "0.3.3", "level": "8.0.1" } }, "sha512-BJ/yke8eLyDoSQAwD9IGhf/Jc1v+8c+6JHJpEeCKtXMlpQDwOBDOdjEwdGT2gXVivwmCmbak/37dIVi4WPUpKg=="],
-
-    "@enbox/browser/@enbox/auth": ["@enbox/auth@0.6.24", "", { "dependencies": { "@enbox/agent": "0.6.4", "@enbox/common": "0.1.0", "@enbox/crypto": "0.1.0", "@enbox/dids": "0.1.0", "@enbox/dwn-clients": "0.3.1", "@enbox/dwn-sdk-js": "0.3.3", "level": "8.0.1" } }, "sha512-BJ/yke8eLyDoSQAwD9IGhf/Jc1v+8c+6JHJpEeCKtXMlpQDwOBDOdjEwdGT2gXVivwmCmbak/37dIVi4WPUpKg=="],
 
     "@enbox/crypto/@noble/curves": ["@noble/curves@1.3.0", "", { "dependencies": { "@noble/hashes": "1.3.3" } }, "sha512-t01iSXPuN+Eqzb4eBX0S5oubSqXbK/xXa1Ne18Hj8f9pStxztHCE2gfboSp/dZRLSqfuLpRK2nDXDK+W9puocA=="],
 
