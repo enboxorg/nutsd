@@ -374,9 +374,7 @@ export function useWallet() {
     const transferTyped = transferTypedRef.current;
     if (!transferTyped) return;
     try {
-      const { records } = await transferTyped.records.query({
-        protocolPath: 'transfer',
-      });
+      const { records } = await transferTyped.records.query('transfer');
       if (!records || records.length === 0) {
         setIncomingTransfers([]);
         return;

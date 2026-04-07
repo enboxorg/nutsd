@@ -1,9 +1,12 @@
 import * as Dialog from '@radix-ui/react-dialog';
+import { VisuallyHidden } from '@radix-ui/react-visually-hidden';
 
 interface DialogWrapperProps {
   open: boolean;
   onClose: () => void;
   children: React.ReactNode;
+  /** Accessible title for screen readers. */
+  title?: string;
   /** Max width class (default: 'max-w-sm') */
   maxWidth?: string;
   /**
@@ -27,6 +30,7 @@ export const DialogWrapper: React.FC<DialogWrapperProps> = ({
   open,
   onClose,
   children,
+  title = 'Dialog',
   maxWidth = 'max-w-sm',
   preventClose = false,
 }) => {
@@ -43,7 +47,11 @@ export const DialogWrapper: React.FC<DialogWrapperProps> = ({
           className={`fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2 w-[calc(100%-2rem)] ${maxWidth} bg-card border border-border p-6 rounded-xl shadow-xl focus:outline-none`}
           onPointerDownOutside={(e) => e.preventDefault()}
           onEscapeKeyDown={(e) => { if (preventClose) e.preventDefault(); }}
+          aria-describedby={undefined}
         >
+          <VisuallyHidden>
+            <Dialog.Title>{title}</Dialog.Title>
+          </VisuallyHidden>
           {children}
         </Dialog.Content>
       </Dialog.Portal>
