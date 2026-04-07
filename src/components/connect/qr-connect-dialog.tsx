@@ -7,10 +7,11 @@ import { CashuWalletDefinition } from '@/protocol/cashu-wallet-protocol';
 import { CashuTransferDefinition } from '@/protocol/cashu-transfer-protocol';
 import { brand } from '@/lib/brand';
 
-// Relay servers used for the cross-device connect flow (try first, fallback).
+// Connect relay servers — must include /connect path segment.
+// WalletConnect.initClient appends /par, /authorize, /token to this base.
 const RELAY_SERVERS = [
-  'https://dev.aws.dwn.enbox.id',
-  'https://enbox-dwn.fly.dev',
+  'https://dev.aws.dwn.enbox.id/connect',
+  'https://enbox-dwn.fly.dev/connect',
 ];
 
 /** All protocol definitions this dapp needs for QR connect. */

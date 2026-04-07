@@ -11,6 +11,12 @@ import { brand } from '@/lib/brand';
 /** All protocol definitions this dapp needs permissions for. */
 const DAPP_PROTOCOLS = [CashuWalletDefinition, CashuTransferDefinition];
 
+/** DWN endpoints that new identities register with and sync to. */
+const DWN_ENDPOINTS = [
+  'https://dev.aws.dwn.enbox.id',
+  'https://enbox-dwn.fly.dev',
+];
+
 /**
  * Get or create a random vault password and persist it in localStorage.
  *
@@ -119,6 +125,12 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       try {
         authRef.current = await AuthManager.create({
           password       : getOrCreateVaultPassword(),
+          dwnEndpoints   : DWN_ENDPOINTS,
+          registration   : {
+            onSuccess      : () => console.log('[nutsd] DWN registration complete'),
+            onFailure      : (err) => console.warn('[nutsd] DWN registration failed:', err),
+            persistTokens  : true,
+          },
           connectHandler : BrowserConnectHandler({
             wallets : walletOptions,
             appName : brand.name,
