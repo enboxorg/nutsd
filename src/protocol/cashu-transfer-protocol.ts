@@ -19,10 +19,11 @@
  * @module
  */
 
+import type { Proof } from '@cashu/cashu-ts';
 import type { ProtocolDefinition } from '@enbox/dwn-sdk-js';
 import { defineProtocol } from '@enbox/browser';
 import { isValidP2pkPublicKey } from '@/cashu/p2pk';
-import { isP2pkLockedToken } from '@/cashu/token-utils';
+import { isP2pkLockedProof, isP2pkLockedToken } from '@/cashu/token-utils';
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -44,6 +45,13 @@ export type TransferData = {
   senderDid: string;
   /** Recipient's P2PK public key the token is locked to. */
   recipientPubkey: string;
+  /**
+   * Raw proofs for pre-encode P2PK validation. When provided,
+   * assertP2PKLocked validates these directly instead of decoding the
+   * token string (which can fail with V4 short keyset IDs).
+   * This field is NOT serialized to the DWN record.
+   */
+  proofs?: Proof[];
 };
 
 /** Payment request (shared with potential senders). */
@@ -131,7 +139,15 @@ export function assertP2PKLocked(data: TransferData): void {
   // Verify the token actually contains P2PK-locked proofs.
   // Without this check, a sender could pass metadata validation while
   // including an unlocked token — which a DWN operator could steal.
-  if (!isP2pkLockedToken(data.token)) {
+  //
+  // If raw proofs are provided, validate them directly (avoids the V4
+  // token decode round-trip which fails on short keyset IDs when the
+  // mint's keysets aren't available to the decoder).
+  const proofsLocked = data.proofs
+    ? data.proofs.every(isP2pkLockedProof)
+    : isP2pkLockedToken(data.token);
+
+  if (!proofsLocked) {
     throw new Error(
       'Transfer token is not P2PK-locked. The Cashu token must contain NUT-11 ' +
       'P2PK spending conditions in all proof secrets. Unlocked tokens cannot ' +
