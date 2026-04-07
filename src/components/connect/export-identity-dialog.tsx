@@ -7,14 +7,6 @@ import { CashuWalletDefinition } from '@/protocol/cashu-wallet-protocol';
 import { CashuTransferDefinition } from '@/protocol/cashu-transfer-protocol';
 import { brand } from '@/lib/brand';
 
-/** Minimal def for the DWN permissions protocol — needed for sync grants. */
-const DWN_PERMISSIONS_PROTOCOL = {
-  protocol  : 'https://identity.foundation/dwn/permissions',
-  published : true,
-  types     : {},
-  structure : {},
-};
-
 interface ExportIdentityDialogProps {
   open: boolean;
   onClose: () => void;
@@ -66,7 +58,7 @@ export const ExportIdentityDialog: React.FC<ExportIdentityDialogProps> = ({ open
       // requests.
       setStatusMessage('Waiting for wallet approval...');
       const session = await auth.connect({
-        protocols      : [CashuWalletDefinition, CashuTransferDefinition, DWN_PERMISSIONS_PROTOCOL],
+        protocols      : [CashuWalletDefinition, CashuTransferDefinition],
         connectHandler : {
           async requestAccess({ permissionRequests }) {
             // Show the wallet selector modal.

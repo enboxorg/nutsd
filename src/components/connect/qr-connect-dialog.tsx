@@ -14,16 +14,8 @@ const RELAY_SERVERS = [
   'https://enbox-dwn.fly.dev/connect',
 ];
 
-/** Minimal def for the DWN permissions protocol — needed for sync grants. */
-const DWN_PERMISSIONS_PROTOCOL = {
-  protocol  : 'https://identity.foundation/dwn/permissions',
-  published : true,
-  types     : {},
-  structure : {},
-};
-
 /** All protocol definitions this dapp needs for QR connect. */
-const DAPP_PROTOCOLS = [CashuWalletDefinition, CashuTransferDefinition, DWN_PERMISSIONS_PROTOCOL];
+const DAPP_PROTOCOLS = [CashuWalletDefinition, CashuTransferDefinition];
 
 interface QRConnectDialogProps {
   onBack: () => void;
