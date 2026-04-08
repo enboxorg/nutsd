@@ -147,60 +147,70 @@ export function useWallet() {
   // --- Transfer record cache (for deletion after redemption) ---
   const incomingTransferRecordsRef = useRef<Array<{ data: TransferData; record: any }>>([]);
 
-  // Initialize repo when connected, install protocol
-  useEffect(() => {
-    if (enbox && isConnected) {
-      const typed = enbox.using(CashuWalletProtocol);
-      typedRef.current = typed;
-      const r = repository(typed);
-      setRepo(r);
-      // Install protocols on the local DWN AND send to remote DWN.
-      // The sync engine should push ProtocolsConfigure, but if sync has
-      // issues (e.g. 500 closed connection), the protocol won't reach
-      // the remote. Explicit send() ensures the remote DWN has the
-      // protocol installed for incoming transfers and pubkey queries.
-      r.configure().then(async (res: any) => {
-        if (res?.protocol) {
-          try { await res.protocol.send(connectedDid); }
-          catch { /* best-effort — sync will retry */ }
-        }
-      }).catch((err: unknown) =>
-        console.warn('[nutsd] Protocol configure:', err),
-      );
+  /**
+   * Install both protocols on the local DWN (and best-effort send to remote),
+   * then return the wallet repository. Awaiting configure() is critical —
+   * data loading hooks (loadP2pkKey, refreshMints, etc.) depend on repo and
+   * will query empty results if the protocol isn't installed yet.
+   */
+  const initializeProtocols = useCallback(async (enboxInstance: any): Promise<Repo> => {
+    const typed = enboxInstance.using(CashuWalletProtocol);
+    typedRef.current = typed;
+    const r = repository(typed);
 
-      // Install transfer protocol + send to remote
-      const transferTyped = enbox.using(CashuTransferProtocol);
-      transferTypedRef.current = transferTyped;
-      const transferRepo = repository(transferTyped);
-      transferRepo.configure().then(async (res: any) => {
-        if (res?.protocol) {
-          try { await res.protocol.send(connectedDid); }
-          catch { /* best-effort */ }
-        }
-      }).catch((err: unknown) =>
-        console.warn('[nutsd] Transfer protocol configure:', err),
-      );
-    } else {
-      typedRef.current = null;
-      transferTypedRef.current = null;
-      setRepo(null);
-      setMints([]);
-      setProofs([]);
-      setKeysets([]);
-      setTransactions([]);
-      setPreferences({});
-      setP2pkKey(null);
-      setIncomingTransfers([]);
-      setDwnError(null);
-      proofRecordCache.current.clear();
-      incomingTransferRecordsRef.current = [];
-      // Clear cashu-ts wallet cache — stale keyset data after disconnect
-      // would cause confusing errors on reconnect or mint key rotation.
-      clearWalletCache();
-      // Reset startup recovery flag so reconnection triggers fresh recovery
-      startupRecoveryDone.current = false;
+    try {
+      const res = await r.configure() as any;
+      res?.protocol?.send?.(connectedDid)?.catch?.(() => {});
+    } catch (err) {
+      console.warn('[nutsd] Protocol configure:', err);
     }
-  }, [enbox, isConnected, connectedDid]);
+
+    const transferTyped = enboxInstance.using(CashuTransferProtocol);
+    transferTypedRef.current = transferTyped;
+    const transferRepo = repository(transferTyped);
+
+    try {
+      const res = await transferRepo.configure() as any;
+      res?.protocol?.send?.(connectedDid)?.catch?.(() => {});
+    } catch (err) {
+      console.warn('[nutsd] Transfer protocol configure:', err);
+    }
+
+    return r;
+  }, [connectedDid]);
+
+  /** Reset all state on disconnect. */
+  const resetState = useCallback(() => {
+    typedRef.current = null;
+    transferTypedRef.current = null;
+    setRepo(null);
+    setMints([]);
+    setProofs([]);
+    setKeysets([]);
+    setTransactions([]);
+    setPreferences({});
+    setP2pkKey(null);
+    setIncomingTransfers([]);
+    setDwnError(null);
+    proofRecordCache.current.clear();
+    incomingTransferRecordsRef.current = [];
+    clearWalletCache();
+    startupRecoveryDone.current = false;
+  }, []);
+
+  // Initialize protocols and repo when connected.
+  useEffect(() => {
+    if (!enbox || !isConnected) {
+      resetState();
+      return;
+    }
+
+    let cancelled = false;
+    initializeProtocols(enbox).then((r) => {
+      if (!cancelled) { setRepo(r); }
+    });
+    return () => { cancelled = true; };
+  }, [enbox, isConnected, initializeProtocols, resetState]);
 
   // =========================================================================
   // Refresh functions
