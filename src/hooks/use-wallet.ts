@@ -123,7 +123,7 @@ export interface WalletPreferences {
 type Repo = any;
 
 export function useWallet() {
-  const { enbox, isConnected, did: connectedDid } = useEnbox();
+  const { enbox, isConnected, did: connectedDid, auth } = useEnbox();
 
   const [repo, setRepo] = useState<Repo>(null);
   const typedRef = useRef<any>(null);
@@ -504,13 +504,31 @@ export function useWallet() {
   // --- Poll for incoming transfers periodically ---
   // The sender writes to our REMOTE DWN; we need to check for new records
   // that sync pulled (or query the remote directly) more than just at startup.
+  // Listen for sync engine pull events. When the sync engine pulls new
+  // records for the cashu-transfer protocol from the remote DWN,
+  // re-check incoming transfers immediately so they appear live.
   useEffect(() => {
-    if (!isConnected || !connectedDid) return;
-    const interval = setInterval(() => {
-      checkIncomingTransfers().catch(() => {});
-    }, 30_000); // every 30 seconds
-    return () => clearInterval(interval);
-  }, [isConnected, connectedDid, checkIncomingTransfers]);
+    if (!auth || !isConnected) return;
+    let syncEngine: any;
+    try {
+      syncEngine = auth.agent?.sync;
+    } catch {
+      return;
+    }
+    if (!syncEngine?.on) return;
+
+    const TRANSFER_PROTOCOL = 'https://enbox.id/protocols/cashu-transfer';
+    const off = syncEngine.on((event: any) => {
+      if (
+        event.type === 'checkpoint:pull-advance' &&
+        event.protocol === TRANSFER_PROTOCOL
+      ) {
+        checkIncomingTransfers().catch(() => {});
+      }
+    });
+
+    return () => off();
+  }, [auth, isConnected, checkIncomingTransfers]);
 
   // --- Subscriptions ---
   const refreshRef = useRef<() => void>(() => {});
