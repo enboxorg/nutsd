@@ -3,6 +3,7 @@ import { Loader2Icon, XIcon, ZapIcon, CopyIcon, CheckIcon, ChevronDownIcon } fro
 import { toastError, toastSuccess, truncateMintUrl } from '@/lib/utils';
 import { createMintQuote, checkMintQuote, mintTokens } from '@/cashu/wallet-ops';
 import { isDleqValid } from '@/cashu/dleq-verify';
+import { acquireWalletLock } from '@/lib/wallet-mutex';
 import { subscribeToQuote } from '@/lib/mint-ws';
 import { QRCodeDisplay } from '@/components/qr-code';
 import { DialogWrapper } from '@/components/ui/dialog-wrapper';
@@ -130,10 +131,12 @@ export const DepositDialog: React.FC<DepositDialogProps> = ({
           onPaid: async () => {
             if (!mountedRef.current) return;
             setStep('waiting');
+            let releaseMintLock: (() => void) | undefined;
             try {
+              releaseMintLock = await acquireWalletLock('mint');
               const proofs = await mintTokens(mintUrl, amountNum, quoteId, mintUnit);
               if (!mountedRef.current) return;
-              if (!isDleqValid(proofs)) {
+              if (!(await isDleqValid(mintUrl, proofs))) {
                 console.warn('[nutsd:financial] DLEQ verification failed on minted proofs');
               }
               await onProofsReceived(mintCtx, proofs);
@@ -154,6 +157,8 @@ export const DepositDialog: React.FC<DepositDialogProps> = ({
                 setErrorMsg(err instanceof Error ? err.message : 'Failed to mint tokens');
                 setStep('error');
               }
+            } finally {
+              releaseMintLock?.();
             }
           },
           onExpired: () => {

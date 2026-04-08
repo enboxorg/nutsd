@@ -38,8 +38,9 @@ import {
 } from '@/protocol/cashu-wallet-protocol';
 import { CashuTransferProtocol } from '@/protocol/cashu-transfer-protocol';
 import type { TransferData } from '@/protocol/cashu-transfer-protocol';
+import type { Proof } from '@cashu/cashu-ts';
 import {
-  checkProofsState,
+  groupProofsByState,
   getKeysetInfos,
   getMintInfo,
   clearWalletCache,
@@ -697,34 +698,41 @@ export function useWallet() {
     for (const [mintUrl, mintProofs] of byMint) {
       try {
         // Build cashu-ts Proof objects for NUT-07 check
-        const cashuProofs = mintProofs.map(p => ({
+        const cashuProofs: Proof[] = mintProofs.map(p => ({
           amount : p.amount,
           id     : p.keysetId,
           secret : p.secret,
           C      : p.C,
         }));
 
-        const states = await checkProofsState(mintUrl, cashuProofs);
+        // Use groupProofsByState which matches results by Y-value (the
+        // public point of each proof's secret) instead of array index.
+        // This is robust against response ordering differences.
+        const grouped = await groupProofsByState(mintUrl, cashuProofs);
 
-        // Match NUT-07 results to our stored proofs by index
-        for (let i = 0; i < mintProofs.length; i++) {
-          const storedProof = mintProofs[i];
-          const mintState = states[i]?.state;
+        // Build a secret → storedProof map for lookup
+        const bySecret = new Map(mintProofs.map(p => [p.secret, p]));
 
-          if (mintState === 'UNSPENT') {
-            // Mint says it's unspent → the operation was rejected or never reached the mint
-            console.log(`[nutsd] Proof ${storedProof.id} is UNSPENT at mint, reverting`);
-            await updateProofState(storedProof.id, 'unspent');
-          } else if (mintState === 'SPENT') {
-            // Mint says it's spent → operation succeeded but we crashed before cleanup
-            console.log(`[nutsd] Proof ${storedProof.id} is SPENT at mint, deleting`);
-            await deleteProofById(storedProof.id);
-          } else if (mintState === 'PENDING') {
-            // Mint is still processing → leave as pending, user will need to check again
-            console.log(`[nutsd] Proof ${storedProof.id} is PENDING at mint, keeping pending`);
-          } else {
-            // Unknown state — leave as is, log warning
-            console.warn(`[nutsd] Proof ${storedProof.id} has unknown mint state: ${mintState}`);
+        for (const proof of grouped.unspent) {
+          const stored = bySecret.get(proof.secret);
+          if (stored) {
+            console.log(`[nutsd] Proof ${stored.id} is UNSPENT at mint, reverting`);
+            await updateProofState(stored.id, 'unspent');
+          }
+        }
+
+        for (const proof of grouped.spent) {
+          const stored = bySecret.get(proof.secret);
+          if (stored) {
+            console.log(`[nutsd] Proof ${stored.id} is SPENT at mint, deleting`);
+            await deleteProofById(stored.id);
+          }
+        }
+
+        for (const proof of grouped.pending) {
+          const stored = bySecret.get(proof.secret);
+          if (stored) {
+            console.log(`[nutsd] Proof ${stored.id} is PENDING at mint, keeping pending`);
           }
         }
       } catch (err) {

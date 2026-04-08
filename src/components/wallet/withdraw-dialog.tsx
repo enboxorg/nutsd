@@ -38,8 +38,7 @@ export const WithdrawDialog: React.FC<WithdrawDialogProps> = ({
   onNewProofs,
   onOldProofsSpent,
   onMarkPending,
-  // onRevertToUnspent not used here — melt leaves proofs pending for reconciliation
-  // because the Lightning payment may still settle after an apparent failure.
+  onRevertToUnspent,
   onTransactionCreated,
 }) => {
   const [selectedMint, setSelectedMint] = useState<Mint | null>(mints[0] ?? null);
@@ -176,6 +175,31 @@ export const WithdrawDialog: React.FC<WithdrawDialogProps> = ({
       // browser killed the request but the mint may have already processed it.
       // Proofs stay pending; reconcilePendingProofs() resolves on next startup.
       if (isUnloading()) return;
+
+      // Re-check the melt quote state with the mint before deciding whether
+      // to revert proofs. If the quote is PAID or PENDING, the Lightning
+      // payment may still settle — leave proofs pending. If UNPAID, the
+      // payment definitively failed — safe to revert immediately.
+      if (quoteRef.current && pendingIdsRef.current.length > 0) {
+        try {
+          const { checkMeltQuote } = await import('@/cashu/wallet-ops');
+          const quoteState = await checkMeltQuote(
+            selectedMint!.url, quoteRef.current.quote, selectedMint!.unit,
+          );
+          if (quoteState.state === 'UNPAID') {
+            // Payment definitively failed — revert proofs to unspent
+            await onRevertToUnspent(pendingIdsRef.current);
+            pendingIdsRef.current = [];
+            console.log('[nutsd] Melt quote UNPAID — proofs reverted to unspent');
+          } else {
+            console.log(`[nutsd] Melt quote ${quoteState.state} — leaving proofs pending`);
+          }
+        } catch {
+          // Quote re-check failed — leave proofs pending for reconciliation
+          console.warn('[nutsd] Failed to re-check melt quote, leaving proofs pending');
+        }
+      }
+
       setErrorMsg(err instanceof Error ? err.message : String(err));
       setStep('error');
     } finally {
