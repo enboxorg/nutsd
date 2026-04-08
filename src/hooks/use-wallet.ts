@@ -339,6 +339,32 @@ export function useWallet() {
     }
   }, [repo]);
 
+  /** Publish the P2PK public key as a world-readable record in the
+   *  cashu-transfer protocol so senders can discover it by DID. */
+  const publishP2pkPublicKey = useCallback(async (publicKey: string) => {
+    const transferTyped = transferTypedRef.current;
+    if (!transferTyped) return;
+    try {
+      // Check if already published
+      const { records } = await transferTyped.records.query('publicKey');
+      if (records && records.length > 0) {
+        console.log('[nutsd] P2PK public key already published');
+        return;
+      }
+      const { record } = await transferTyped.records.create('publicKey', {
+        data     : { publicKey, publishedAt: new Date().toISOString() },
+        published: true,
+      });
+      if (record) {
+        // Send to remote DWN so others can query it
+        await record.send();
+        console.log('[nutsd] Published P2PK public key to DWN');
+      }
+    } catch (err) {
+      console.warn('[nutsd] Failed to publish P2PK public key:', err);
+    }
+  }, []);
+
   const loadP2pkKey = useCallback(async () => {
     if (!repo) return;
     try {
@@ -346,6 +372,8 @@ export function useWallet() {
       if (record) {
         const data: P2pkKeyData = await record.data.json();
         setP2pkKey({ publicKey: data.publicKey, privateKey: data.privateKey });
+        // Ensure the public key is published (may not be if created before this feature)
+        publishP2pkPublicKey(data.publicKey);
         return;
       }
       // Generate new key and store it
@@ -359,10 +387,14 @@ export function useWallet() {
       });
       setP2pkKey(newKey);
       console.log('[nutsd] Generated new P2PK key:', newKey.publicKey.slice(0, 12) + '...');
+
+      // Publish the public key to the cashu-transfer protocol so other
+      // users can discover it by querying our DWN (world-readable).
+      publishP2pkPublicKey(newKey.publicKey);
     } catch (err) {
       console.error('Failed to load/create P2PK key:', err);
     }
-  }, [repo]);
+  }, [repo, publishP2pkPublicKey]);
 
   /**
    * Query the user's DWN for incoming transfer protocol records.
@@ -1366,21 +1398,21 @@ export function useWallet() {
    * After successful redemption, deletes the transfer record from the DWN
    * so it does not reappear on the next startup (idempotency).
    */
-  const redeemIncomingTransfer = useCallback(async (transfer: TransferData, index: number) => {
+  const redeemIncomingTransfer = useCallback(async (transfer: TransferData) => {
     if (!p2pkKey?.privateKey) {
       throw new Error('Cannot redeem P2PK transfer: no private key available');
     }
 
     const releaseLock = await acquireWalletLock('p2p-redeem');
     try {
-      return await _redeemIncomingTransferInner(transfer, index);
+      return await _redeemIncomingTransferInner(transfer);
     } finally {
       releaseLock();
     }
   }, [p2pkKey, mints, addMint, safeStoreReceivedProofs, addTransaction]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Inner redeem logic (called under lock). */
-  const _redeemIncomingTransferInner = useCallback(async (transfer: TransferData, index: number) => {
+  const _redeemIncomingTransferInner = useCallback(async (transfer: TransferData) => {
     if (!p2pkKey?.privateKey) {
       throw new Error('Cannot redeem P2PK transfer: no private key available');
     }
@@ -1440,8 +1472,12 @@ export function useWallet() {
     // come back on the next startup. This is best-effort — if deletion
     // fails, the user will see the transfer again but the re-claim
     // attempt will fail at the mint (tokens already swapped).
+    // Match by token content (not array index) to avoid stale-index bugs
+    // when checkIncomingTransfers refreshes the array concurrently.
     try {
-      const transferEntry = incomingTransferRecordsRef.current[index];
+      const transferEntry = incomingTransferRecordsRef.current.find(
+        (e) => e.data.token === transfer.token,
+      );
       if (transferEntry?.record) {
         await transferEntry.record.delete();
       }
@@ -1449,9 +1485,11 @@ export function useWallet() {
       console.warn('[nutsd] Failed to delete claimed transfer record:', err);
     }
 
-    // STEP 6: Remove from local UI state.
-    incomingTransferRecordsRef.current = incomingTransferRecordsRef.current.filter((_, i) => i !== index);
-    setIncomingTransfers(prev => prev.filter((_, i) => i !== index));
+    // STEP 6: Remove from local UI state by token match (not index).
+    incomingTransferRecordsRef.current = incomingTransferRecordsRef.current.filter(
+      (e) => e.data.token !== transfer.token,
+    );
+    setIncomingTransfers(prev => prev.filter((t) => t.token !== transfer.token));
   }, [p2pkKey, mints, addMint, safeStoreReceivedProofs, addTransaction]);
 
   // =========================================================================

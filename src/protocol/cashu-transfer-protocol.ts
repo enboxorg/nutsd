@@ -54,6 +54,14 @@ export type TransferData = {
   proofs?: Proof[];
 };
 
+/** Published P2PK public key — world-readable so senders can lock tokens. */
+export type P2pkPublicKeyData = {
+  /** Compressed secp256k1 public key in hex (02... or 03...). */
+  publicKey: string;
+  /** ISO timestamp when the key was published. */
+  publishedAt: string;
+};
+
 /** Payment request (shared with potential senders). */
 export type PaymentRequestData = {
   /** Requested amount. */
@@ -88,14 +96,32 @@ export const CashuTransferDefinition = {
       schema      : 'https://enbox.id/schemas/cashu-transfer/request',
       dataFormats : ['application/json'],
     },
+    publicKey: {
+      schema      : 'https://enbox.id/schemas/cashu-transfer/public-key',
+      dataFormats : ['application/json'],
+    },
   },
   structure: {
     transfer: {
+      // SECURITY NOTE: 'anyone can create' allows any DID to write transfer
+      // records to any user's DWN. This is required for P2P ecash transfers
+      // (the sender writes to the recipient's DWN). However, it also means
+      // a malicious actor could spam a user's DWN with fake transfer records.
+      // The tokens would be P2PK-locked to a key nobody has, so they can't
+      // be stolen, but they would slow down checkIncomingTransfers.
+      //
+      // Mitigation: rely on DWN-level rate limiting (per-DID write quotas)
+      // and/or add a $recordLimit when the DWN SDK supports it.
       $actions: [
         { who: 'anyone', can: ['create'] },
       ],
     },
     request: {},
+    publicKey: {
+      $actions: [
+        { who: 'anyone', can: ['read'] },
+      ],
+    },
   },
 } as const satisfies ProtocolDefinition;
 
@@ -163,6 +189,7 @@ export function assertP2PKLocked(data: TransferData): void {
 export type CashuTransferSchemaMap = {
   transfer: TransferData;
   request: PaymentRequestData;
+  publicKey: P2pkPublicKeyData;
 };
 
 /** Typed Cashu Transfer protocol for use with `enbox.using()`. */

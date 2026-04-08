@@ -600,7 +600,7 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
                       {formatAmount(transfer.amount, transfer.unit)} from {transfer.senderDid?.slice(0, 20)}...
                     </span>
                     <button
-                      onClick={() => redeemIncomingTransfer(transfer, i).catch(err => toastError('Redeem failed', err))}
+                       onClick={() => redeemIncomingTransfer(transfer).catch(err => toastError('Redeem failed', err))}
                       className="px-2 py-1 rounded-full bg-primary text-primary-foreground text-[10px] font-medium"
                     >
                       Claim
@@ -737,18 +737,19 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
         />
       )}
       {showSendToDid && hasMints && p2pkKey && did && (
-        <SendToDIDDialog
-          mints={orderedMints}
-          mintBalances={mintBalances}
-          getUnspentProofs={getUnspentProofsForMint}
-          senderDid={did}
-          enbox={enbox}
-          onClose={() => setShowSendToDid(false)}
-          onNewProofs={storeNewProofs}
-          onOldProofsSpent={removeProofsByIds}
-          onMarkPending={markProofsPending}
-          onTransactionCreated={recordTransaction}
-        />
+         <SendToDIDDialog
+           mints={orderedMints}
+           mintBalances={mintBalances}
+           getUnspentProofs={getUnspentProofsForMint}
+           senderDid={did}
+           enbox={enbox}
+           onClose={() => setShowSendToDid(false)}
+           onNewProofs={storeNewProofs}
+           onOldProofsSpent={removeProofsByIds}
+           onMarkPending={markProofsPending}
+           onRevertPending={revertProofsToUnspent}
+           onTransactionCreated={recordTransaction}
+         />
       )}
       {showReceive && (
         <ReceiveDialog
