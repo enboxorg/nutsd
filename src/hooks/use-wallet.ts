@@ -123,7 +123,7 @@ export interface WalletPreferences {
 type Repo = any;
 
 export function useWallet() {
-  const { enbox, isConnected } = useEnbox();
+  const { enbox, isConnected, did: connectedDid } = useEnbox();
 
   const [repo, setRepo] = useState<Repo>(null);
   const typedRef = useRef<any>(null);
@@ -154,16 +154,30 @@ export function useWallet() {
       typedRef.current = typed;
       const r = repository(typed);
       setRepo(r);
-      // Install protocol on the local DWN (idempotent if already installed)
-      r.configure().catch((err: unknown) =>
-        console.warn('[nutsd] Protocol configure (may already exist):', err),
+      // Install protocols on the local DWN AND send to remote DWN.
+      // The sync engine should push ProtocolsConfigure, but if sync has
+      // issues (e.g. 500 closed connection), the protocol won't reach
+      // the remote. Explicit send() ensures the remote DWN has the
+      // protocol installed for incoming transfers and pubkey queries.
+      r.configure().then(async (res: any) => {
+        if (res?.protocol) {
+          try { await res.protocol.send(connectedDid); }
+          catch { /* best-effort — sync will retry */ }
+        }
+      }).catch((err: unknown) =>
+        console.warn('[nutsd] Protocol configure:', err),
       );
 
-      // Install transfer protocol (idempotent)
+      // Install transfer protocol + send to remote
       const transferTyped = enbox.using(CashuTransferProtocol);
       transferTypedRef.current = transferTyped;
       const transferRepo = repository(transferTyped);
-      transferRepo.configure().catch((err: unknown) =>
+      transferRepo.configure().then(async (res: any) => {
+        if (res?.protocol) {
+          try { await res.protocol.send(connectedDid); }
+          catch { /* best-effort */ }
+        }
+      }).catch((err: unknown) =>
         console.warn('[nutsd] Transfer protocol configure:', err),
       );
     } else {
@@ -186,7 +200,7 @@ export function useWallet() {
       // Reset startup recovery flag so reconnection triggers fresh recovery
       startupRecoveryDone.current = false;
     }
-  }, [enbox, isConnected]);
+  }, [enbox, isConnected, connectedDid]);
 
   // =========================================================================
   // Refresh functions
@@ -357,8 +371,11 @@ export function useWallet() {
         published: true,
       });
       if (record) {
-        // Send to remote DWN so others can query it
-        await record.send();
+        // Send to remote DWN so others can query it.
+        // send() without a target sends to the connected DID's endpoints.
+        await record.send().catch(() => {
+          console.warn('[nutsd] Failed to send P2PK public key to remote DWN');
+        });
         console.log('[nutsd] Published P2PK public key to DWN');
       }
     } catch (err) {
@@ -405,9 +422,24 @@ export function useWallet() {
    */
   const checkIncomingTransfers = useCallback(async () => {
     const transferTyped = transferTypedRef.current;
-    if (!transferTyped) return;
+    if (!transferTyped || !connectedDid) return;
     try {
-      const { records } = await transferTyped.records.query('transfer');
+      // Query local DWN (where sync should have pulled records)
+      const localResult = await transferTyped.records.query('transfer');
+      const localCount = localResult.records?.length ?? 0;
+
+      // Also query remote DWN directly to verify the record exists there
+      let remoteCount = 0;
+      try {
+        const remoteResult = await transferTyped.records.query('transfer', { from: connectedDid });
+        remoteCount = remoteResult.records?.length ?? 0;
+      } catch (remoteErr) {
+        console.warn('[nutsd] Remote transfer query failed:', remoteErr);
+      }
+
+      console.log(`[nutsd] checkIncomingTransfers: local=${localCount}, remote=${remoteCount}`);
+
+      const records = localResult.records;
       if (!records || records.length === 0) {
         setIncomingTransfers([]);
         return;
@@ -468,6 +500,17 @@ export function useWallet() {
 
     return () => { cancelled = true; };
   }, [mints, refreshProofs, refreshKeysets, checkIncomingTransfers]);
+
+  // --- Poll for incoming transfers periodically ---
+  // The sender writes to our REMOTE DWN; we need to check for new records
+  // that sync pulled (or query the remote directly) more than just at startup.
+  useEffect(() => {
+    if (!isConnected || !connectedDid) return;
+    const interval = setInterval(() => {
+      checkIncomingTransfers().catch(() => {});
+    }, 30_000); // every 30 seconds
+    return () => clearInterval(interval);
+  }, [isConnected, connectedDid, checkIncomingTransfers]);
 
   // --- Subscriptions ---
   const refreshRef = useRef<() => void>(() => {});
