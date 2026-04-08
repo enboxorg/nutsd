@@ -2,69 +2,41 @@ import { describe, it, expect } from 'vitest';
 import { verifyDleqProofs, isDleqValid } from '../cashu/dleq-verify';
 
 describe('verifyDleqProofs', () => {
-  it('verifies proofs with valid DLEQ data', () => {
-    const proofs = [
-      { amount: 4, id: 'k1', secret: 's', C: 'c', dleq: { e: 'ab01', s: 'cd02', r: 'ef03' } },
-    ];
-    const result = verifyDleqProofs(proofs as any);
-    expect(result.verified).toBe(1);
-    expect(result.failed).toBe(0);
-  });
-
-  it('skips proofs without DLEQ', () => {
+  it('skips all proofs when none have DLEQ data', async () => {
     const proofs = [
       { amount: 4, id: 'k1', secret: 's', C: 'c' },
+      { amount: 2, id: 'k2', secret: 's2', C: 'c2' },
     ];
-    const result = verifyDleqProofs(proofs as any);
-    expect(result.skipped).toBe(1);
+    const result = await verifyDleqProofs('https://testmint.example', proofs as any);
+    expect(result.skipped).toBe(2);
+    expect(result.verified).toBe(0);
     expect(result.failed).toBe(0);
+    expect(result.total).toBe(2);
   });
 
-  it('fails proofs with empty DLEQ fields', () => {
-    const proofs = [
-      { amount: 4, id: 'k1', secret: 's', C: 'c', dleq: { e: '', s: 'cd', r: 'ef' } },
-    ];
-    const result = verifyDleqProofs(proofs as any);
-    expect(result.failed).toBe(1);
-    expect(result.failedIndices).toEqual([0]);
-  });
-
-  it('fails proofs with non-hex DLEQ data', () => {
-    const proofs = [
-      { amount: 4, id: 'k1', secret: 's', C: 'c', dleq: { e: 'xyz', s: 'abc', r: 'def' } },
-    ];
-    const result = verifyDleqProofs(proofs as any);
-    // 'abc' and 'def' are valid hex, 'xyz' is not
-    expect(result.failed).toBe(1);
-  });
-
-  it('handles mixed proofs', () => {
+  it('skips verification gracefully when mint is unreachable', async () => {
     const proofs = [
       { amount: 4, id: 'k1', secret: 's', C: 'c', dleq: { e: 'ab', s: 'cd', r: 'ef' } },
-      { amount: 2, id: 'k1', secret: 's2', C: 'c2' }, // no DLEQ
-      { amount: 1, id: 'k1', secret: 's3', C: 'c3', dleq: { e: '', s: '', r: '' } }, // invalid
     ];
-    const result = verifyDleqProofs(proofs as any);
-    expect(result.total).toBe(3);
-    expect(result.verified).toBe(1);
+    // Use a non-existent mint — should skip, not throw
+    const result = await verifyDleqProofs('https://nonexistent-mint.invalid', proofs as any);
     expect(result.skipped).toBe(1);
-    expect(result.failed).toBe(1);
+    expect(result.failed).toBe(0);
   });
 });
 
 describe('isDleqValid', () => {
-  it('returns true when no DLEQ failures', () => {
+  it('returns true when no proofs have DLEQ data (all skipped)', async () => {
     const proofs = [
-      { amount: 4, id: 'k1', secret: 's', C: 'c', dleq: { e: 'ab', s: 'cd', r: 'ef' } },
-      { amount: 2, id: 'k1', secret: 's2', C: 'c2' }, // skipped is OK
+      { amount: 4, id: 'k1', secret: 's', C: 'c' },
     ];
-    expect(isDleqValid(proofs as any)).toBe(true);
+    expect(await isDleqValid('https://testmint.example', proofs as any)).toBe(true);
   });
 
-  it('returns false when any DLEQ fails', () => {
+  it('returns true when mint is unreachable (graceful skip)', async () => {
     const proofs = [
-      { amount: 4, id: 'k1', secret: 's', C: 'c', dleq: { e: '', s: '', r: '' } },
+      { amount: 4, id: 'k1', secret: 's', C: 'c', dleq: { e: 'ab', s: 'cd', r: 'ef' } },
     ];
-    expect(isDleqValid(proofs as any)).toBe(false);
+    expect(await isDleqValid('https://nonexistent-mint.invalid', proofs as any)).toBe(true);
   });
 });

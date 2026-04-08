@@ -185,7 +185,7 @@ const TokenTab: React.FC<{
       }
 
       // NUT-12: Verify DLEQ proofs on received tokens
-      if (!isDleqValid(newProofs)) {
+      if (!(await isDleqValid(mintUrl, newProofs))) {
         console.warn('[nutsd:financial] DLEQ verification failed on received proofs — mint may be misbehaving');
         // Don't block the receive — DLEQ is optional per spec — but warn the user
         toastError('Warning', new Error('Some proofs failed DLEQ verification. The mint may be misbehaving.'));
@@ -313,7 +313,7 @@ const LightningTab: React.FC<{
             try {
               const proofs = await mintTokens(mintUrl, amountNum, quoteId, mintUnit);
               if (!mountedRef.current) return;
-              if (!isDleqValid(proofs)) {
+              if (!(await isDleqValid(mintUrl, proofs))) {
                 console.warn('[nutsd:financial] DLEQ verification failed on Lightning-minted proofs');
               }
               await onProofsReceived(mintCtx, proofs, mintUrl);

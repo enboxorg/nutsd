@@ -109,6 +109,23 @@ export async function createMeltQuote(
   return wallet.createMeltQuoteBolt11(invoice);
 }
 
+/**
+ * Check the state of a melt quote (NUT-05).
+ *
+ * Used after a melt failure to determine whether the Lightning payment
+ * actually went through. If UNPAID, proofs can be safely reverted.
+ */
+export async function checkMeltQuote(
+  mintUrl: string,
+  quoteId: string,
+  unit = 'sat',
+): Promise<{ state: string; paid: boolean }> {
+  const wallet = await getWallet(mintUrl, unit);
+  const result = await wallet.checkMeltQuoteBolt11(quoteId) as any;
+  const state = result.state ?? (result.paid ? 'PAID' : 'UNPAID');
+  return { state, paid: state === 'PAID' };
+}
+
 /** Melt proofs to pay a Lightning invoice. Returns change proofs (if any). */
 export async function meltTokens(
   mintUrl: string,
@@ -185,6 +202,22 @@ export async function checkProofsState(
   const wallet = await getWallet(mintUrl, unit);
   const result = await wallet.checkProofsStates(proofs);
   return result as ProofStateResult[];
+}
+
+/**
+ * Group proofs by their mint-side state using NUT-07.
+ *
+ * Uses Y-value (public point of each secret) for matching, which is
+ * robust against response ordering differences. Preferred over
+ * checkProofsState + index-based matching.
+ */
+export async function groupProofsByState(
+  mintUrl: string,
+  proofs: Proof[],
+  unit = 'sat',
+): Promise<{ unspent: Proof[]; pending: Proof[]; spent: Proof[] }> {
+  const wallet = await getWallet(mintUrl, unit);
+  return wallet.groupProofsByState(proofs);
 }
 
 /**
