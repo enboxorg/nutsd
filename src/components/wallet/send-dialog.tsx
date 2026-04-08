@@ -1,8 +1,8 @@
-import { useState, useRef } from 'react';
-import { Loader2Icon, XIcon, SendIcon, CopyIcon, CheckIcon } from 'lucide-react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { Loader2Icon, XIcon, SendIcon, CopyIcon, CheckIcon, CheckCircleIcon } from 'lucide-react';
 import { QRCodeDisplay } from '@/components/qr-code';
 import { toastError, toastSuccess, truncateMintUrl, formatAmount } from '@/lib/utils';
-import { swapProofs, estimateInputFee } from '@/cashu/wallet-ops';
+import { swapProofs, estimateInputFee, checkTokenSpent } from '@/cashu/wallet-ops';
 import { encodeToken } from '@/cashu/token-utils';
 import { acquireWalletLock } from '@/lib/wallet-mutex';
 import { DialogWrapper } from '@/components/ui/dialog-wrapper';
@@ -134,6 +134,29 @@ export const SendDialog: React.FC<SendDialogProps> = ({
     }
   };
 
+  // --- Token claim status polling ---
+  const [claimed, setClaimed] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval>>();
+
+  const checkClaimed = useCallback(async () => {
+    if (!token || !selectedMint || claimed) return;
+    const spent = await checkTokenSpent(token, selectedMint.url, selectedMint.unit);
+    if (spent === true) {
+      setClaimed(true);
+      if (pollRef.current) clearInterval(pollRef.current);
+    }
+  }, [token, selectedMint, claimed]);
+
+  useEffect(() => {
+    if (step !== 'token' || !token || claimed) return;
+    // Check immediately, then poll every 5 seconds.
+    checkClaimed();
+    pollRef.current = setInterval(checkClaimed, 5_000);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [step, token, claimed, checkClaimed]);
+
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(token);
@@ -236,31 +259,55 @@ export const SendDialog: React.FC<SendDialogProps> = ({
 
         {step === 'token' && (
           <div className="space-y-4">
-            <div className="flex justify-center">
-              <QRCodeDisplay value={token} size={180} />
-            </div>
-            <p className="text-sm font-semibold text-center">{formatAmount(parseInt(amount), selectedMint?.unit)}</p>
-            <p className="text-xs text-muted-foreground">
-              Share this Cashu token with the recipient:
-            </p>
-            <div className="p-3 rounded-lg bg-background border border-border max-h-32 overflow-y-auto">
-              <div className="token-string text-muted-foreground">
-                {token}
-              </div>
-            </div>
-            <button
-              onClick={handleCopy}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-border text-sm font-medium hover:bg-muted transition-colors"
-            >
-              {copied ? <CheckIcon className="h-4 w-4" /> : <CopyIcon className="h-4 w-4" />}
-              {copied ? 'Copied' : 'Copy Token'}
-            </button>
-            <button
-              onClick={onClose}
-              className="w-full px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity"
-            >
-              Done
-            </button>
+            {claimed ? (
+              <>
+                <div className="flex flex-col items-center py-4 gap-3">
+                  <CheckCircleIcon className="h-10 w-10 text-green-400" />
+                  <p className="text-sm font-semibold text-green-400">Token claimed!</p>
+                  <p className="text-xs text-muted-foreground text-center">
+                    {formatAmount(parseInt(amount), selectedMint?.unit)} has been received by the recipient.
+                  </p>
+                </div>
+                <button
+                  onClick={onClose}
+                  className="w-full px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity"
+                >
+                  Done
+                </button>
+              </>
+            ) : (
+              <>
+                <div className="flex justify-center">
+                  <QRCodeDisplay value={token} size={180} />
+                </div>
+                <p className="text-sm font-semibold text-center">{formatAmount(parseInt(amount), selectedMint?.unit)}</p>
+                <p className="text-xs text-muted-foreground">
+                  Share this Cashu token with the recipient:
+                </p>
+                <div className="p-3 rounded-lg bg-background border border-border max-h-32 overflow-y-auto">
+                  <div className="token-string text-muted-foreground">
+                    {token}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1 justify-center text-[10px] text-muted-foreground">
+                  <Loader2Icon className="h-3 w-3 animate-spin" />
+                  Waiting for recipient to claim...
+                </div>
+                <button
+                  onClick={handleCopy}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-border text-sm font-medium hover:bg-muted transition-colors"
+                >
+                  {copied ? <CheckIcon className="h-4 w-4" /> : <CopyIcon className="h-4 w-4" />}
+                  {copied ? 'Copied' : 'Copy Token'}
+                </button>
+                <button
+                  onClick={onClose}
+                  className="w-full px-4 py-2 rounded-full text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  Close
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>

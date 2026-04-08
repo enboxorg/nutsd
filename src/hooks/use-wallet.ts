@@ -123,7 +123,7 @@ export interface WalletPreferences {
 type Repo = any;
 
 export function useWallet() {
-  const { enbox, isConnected, did: connectedDid, auth } = useEnbox();
+  const { enbox, isConnected, did: connectedDid, isDelegateSession } = useEnbox();
 
   const [repo, setRepo] = useState<Repo>(null);
   const typedRef = useRef<any>(null);
@@ -152,19 +152,35 @@ export function useWallet() {
    * then return the wallet repository. Awaiting configure() is critical —
    * data loading hooks (loadP2pkKey, refreshMints, etc.) depend on repo and
    * will query empty results if the protocol isn't installed yet.
+   *
+   * For DELEGATE sessions: skip configure() for the wallet protocol.
+   * The wallet already configured it during the connect approval flow with
+   * proper $encryption key derivation from the owner's X25519 key. If the
+   * delegate eagerly re-configures, the new ProtocolsConfigure (signed by
+   * the delegate, not the owner) could overwrite the owner's configure and
+   * break encrypted record access (p2pkKey, proofs, etc.).
+   *
+   * The transfer protocol does NOT have encryptionRequired, so it's safe
+   * to configure in both modes.
    */
-  const initializeProtocols = useCallback(async (enboxInstance: any): Promise<Repo> => {
+  const initializeProtocols = useCallback(async (enboxInstance: any, isDelegate: boolean): Promise<Repo> => {
     const typed = enboxInstance.using(CashuWalletProtocol);
     typedRef.current = typed;
     const r = repository(typed);
 
-    try {
-      const res = await r.configure() as any;
-      res?.protocol?.send?.(connectedDid)?.catch?.(() => {});
-    } catch (err) {
-      console.warn('[nutsd] Protocol configure:', err);
+    if (!isDelegate) {
+      // Owner session: configure the wallet protocol (includes $encryption keys).
+      try {
+        const res = await r.configure() as any;
+        res?.protocol?.send?.(connectedDid)?.catch?.(() => {});
+      } catch (err) {
+        console.warn('[nutsd] Protocol configure:', err);
+      }
+    } else {
+      console.log('[nutsd] Delegate session — skipping wallet protocol configure (already configured by wallet owner)');
     }
 
+    // Transfer protocol: safe to configure in both modes (no encryptionRequired).
     const transferTyped = enboxInstance.using(CashuTransferProtocol);
     transferTypedRef.current = transferTyped;
     const transferRepo = repository(transferTyped);
@@ -206,7 +222,7 @@ export function useWallet() {
     }
 
     let cancelled = false;
-    initializeProtocols(enbox).then((r) => {
+    initializeProtocols(enbox, isDelegateSession).then((r) => {
       if (!cancelled) { setRepo(r); }
     });
     return () => { cancelled = true; };
@@ -393,34 +409,93 @@ export function useWallet() {
     }
   }, []);
 
+  /**
+   * Load (or create) the P2PK keypair.
+   *
+   * SAFETY INVARIANT: once a key has been published (i.e. a publicKey
+   * record exists in the transfer protocol), we MUST NOT generate a
+   * replacement. Doing so would orphan the published pubkey — senders
+   * would lock tokens to key A while the wallet holds key B.
+   *
+   * Failure modes:
+   * 1. No private-key record AND no published key → first-time setup, generate.
+   * 2. No private-key record BUT published key exists → key is lost/unreadable.
+   *    Fail closed: log error, do NOT generate a new key.
+   * 3. Private-key record exists but decrypt fails → encrypted record issue.
+   *    Fail closed: log error, do NOT generate a new key.
+   * 4. Private-key record exists and decrypts → happy path.
+   */
   const loadP2pkKey = useCallback(async () => {
     if (!repo) return;
+    const transferTyped = transferTypedRef.current;
+
     try {
+      console.log('[nutsd] loadP2pkKey for DID:', connectedDid?.slice(0, 24) + '...');
+
+      // Step 1: Try to read the encrypted private key from the wallet protocol.
       let record: any;
+      let getError: unknown;
       try {
         record = await repo.p2pkKey.get();
-        console.log('[nutsd] p2pkKey.get() result:', record ? 'found' : 'not found');
-      } catch (getErr) {
-        console.error('[nutsd] p2pkKey.get() threw:', getErr);
+      } catch (err) {
+        getError = err;
       }
 
+      // Case 4: record found — try to decrypt.
       if (record) {
         try {
           const data: P2pkKeyData = await record.data.json();
           setP2pkKey({ publicKey: data.publicKey, privateKey: data.privateKey });
-          console.log('[nutsd] Loaded existing P2PK key:', data.publicKey.slice(0, 12) + '...');
+          console.log('[nutsd] P2PK key loaded:', data.publicKey.slice(0, 12) + '...');
           publishP2pkPublicKey(data.publicKey);
           return;
         } catch (decryptErr) {
-          // Don't regenerate — the old key is still referenced by senders.
-          // It will become readable once encryption keys are available.
-          console.error('[nutsd] p2pkKey decrypt/parse failed:', decryptErr);
+          // Case 3: record exists but can't be decrypted.
+          console.error(
+            '[nutsd] P2PK key record exists but cannot be decrypted.',
+            'NOT generating a replacement — existing published key must be preserved.',
+            decryptErr,
+          );
           return;
         }
       }
 
-      // Only generate if no record exists at all
+      // Record not found (or query threw). Before generating a new key,
+      // check whether a publicKey was ALREADY PUBLISHED in the transfer
+      // protocol. If so, the wallet was previously initialized and the
+      // private key is lost/unreadable — we must NOT silently rotate.
+      let alreadyPublished = false;
+      if (transferTyped) {
+        try {
+          const { records } = await transferTyped.records.query('publicKey');
+          alreadyPublished = (records?.length ?? 0) > 0;
+        } catch {
+          // Query failure — conservative: assume not published.
+        }
+      }
+
+      if (getError) {
+        console.error('[nutsd] p2pkKey.get() threw:', getError);
+      }
+
+      if (alreadyPublished) {
+        // Case 2: published key exists but private key is not readable.
+        console.error(
+          '[nutsd] P2PK public key is published but private key record was not found.',
+          'NOT generating a replacement — existing senders may have locked tokens to the published key.',
+          'Claiming existing P2PK transfers will not work until the key is recovered.',
+        );
+        return;
+      }
+
+      // Case 1: truly first-time setup — no published key, no private key.
+      console.log('[nutsd] First-time P2PK key setup');
       const newKey = generateP2pkKeyPair();
+
+      // CRITICAL: the private key MUST be durably stored BEFORE we publish
+      // the public key or use the key in memory. If set() fails, we must
+      // NOT publish — otherwise the published key has no recoverable
+      // private key, and tokens locked to it are permanently unclaimable.
       try {
         await repo.p2pkKey.set({
           data: {
@@ -429,14 +504,23 @@ export function useWallet() {
             createdAt  : new Date().toISOString(),
           } satisfies P2pkKeyData,
         });
-        console.log('[nutsd] Generated and stored new P2PK key:', newKey.publicKey.slice(0, 12) + '...');
       } catch (setErr) {
-        console.error('[nutsd] p2pkKey.set() failed:', setErr);
+        console.error(
+          '[nutsd] p2pkKey.set() FAILED — key NOT persisted, NOT publishing.',
+          'P2PK transfers will not work until the DWN write succeeds.',
+          setErr,
+        );
+        // Do NOT setP2pkKey or publishP2pkPublicKey — the key is ephemeral
+        // and would create an unrecoverable pubkey/privkey split on refresh.
+        return;
       }
+
+      // Private key is durably stored — safe to publish and use.
+      console.log('[nutsd] P2PK key generated and stored:', newKey.publicKey.slice(0, 12) + '...');
       setP2pkKey(newKey);
       publishP2pkPublicKey(newKey.publicKey);
     } catch (err) {
-      console.error('Failed to load/create P2PK key:', err);
+      console.error('[nutsd] P2PK key load failed:', err);
     }
   }, [repo, publishP2pkPublicKey]);
 
@@ -527,38 +611,10 @@ export function useWallet() {
     return () => { cancelled = true; };
   }, [mints, refreshProofs, refreshKeysets, checkIncomingTransfers]);
 
-  // --- Poll for incoming transfers periodically ---
-  // The sender writes to our REMOTE DWN; we need to check for new records
-  // that sync pulled (or query the remote directly) more than just at startup.
-  // Listen for sync engine pull events. When the sync engine pulls new
-  // records for the cashu-transfer protocol from the remote DWN,
-  // re-check incoming transfers immediately so they appear live.
-  useEffect(() => {
-    if (!auth || !isConnected) return;
-    let syncEngine: any;
-    try {
-      syncEngine = auth.agent?.sync;
-    } catch {
-      return;
-    }
-    if (!syncEngine?.on) return;
-
-    const TRANSFER_PROTOCOL = 'https://enbox.id/protocols/cashu-transfer';
-    const off = syncEngine.on((event: any) => {
-      if (
-        event.type === 'checkpoint:pull-advance' &&
-        event.protocol === TRANSFER_PROTOCOL
-      ) {
-        checkIncomingTransfers().catch(() => {});
-      }
-    });
-
-    return () => off();
-  }, [auth, isConnected, checkIncomingTransfers]);
-
   // --- Subscriptions ---
   const refreshRef = useRef<() => void>(() => {});
 
+  // Live subscription for the WALLET protocol (proofs, mints, transactions).
   useEffect(() => {
     const typed = typedRef.current;
     if (!typed) return;
@@ -585,6 +641,39 @@ export function useWallet() {
       cleanup?.();
     };
   }, [repo]);
+
+  // Live subscription for the TRANSFER protocol (incoming P2PK transfers).
+  // Without this, incoming transfers only appear on manual refresh.
+  useEffect(() => {
+    const transferTyped = transferTypedRef.current;
+    if (!transferTyped) return;
+
+    let cleanup: (() => void) | undefined;
+    let debounceTimer: ReturnType<typeof setTimeout>;
+
+    transferTyped.subscribe().then((liveQuery: { on: (event: string, cb: () => void) => () => void; close: () => void }) => {
+      if (!liveQuery) return;
+
+      const unsub = liveQuery.on('change', () => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          checkIncomingTransfers().catch(() => {});
+        }, 300);
+      });
+
+      cleanup = () => {
+        unsub();
+        liveQuery.close();
+      };
+    }).catch((err: unknown) => {
+      console.warn('[nutsd] Transfer protocol subscription failed:', err);
+    });
+
+    return () => {
+      clearTimeout(debounceTimer);
+      cleanup?.();
+    };
+  }, [repo, checkIncomingTransfers]);
 
   useEffect(() => {
     refreshRef.current = () => {
