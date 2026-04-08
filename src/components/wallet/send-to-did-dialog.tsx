@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { Loader2Icon, XIcon, UsersIcon, CheckCircleIcon, AlertCircleIcon } from 'lucide-react';
 import { toastError, toastSuccess, truncateMintUrl, formatAmount } from '@/lib/utils';
 import { sendP2pkLocked } from '@/cashu/p2pk';
@@ -49,9 +49,30 @@ export const SendToDIDDialog: React.FC<SendToDIDDialogProps> = ({
   const [amount, setAmount] = useState('');
   const [memo, setMemo] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [sentToken, setSentToken] = useState('');
+  const [claimed, setClaimed] = useState(false);
   const busyRef = useRef(false);
+  const pollRef = useRef<ReturnType<typeof setInterval>>();
 
   const balance = selectedMint ? (mintBalances.get(selectedMint.url) ?? 0) : 0;
+
+  // --- Token claim status polling (NUT-07) ---
+  useEffect(() => {
+    if (step !== 'done' || !sentToken || !selectedMint || claimed) return;
+    const check = async (): Promise<void> => {
+      try {
+        const { checkTokenSpent } = await import('@/cashu/wallet-ops');
+        const spent = await checkTokenSpent(sentToken, selectedMint.url, selectedMint.unit);
+        if (spent === true) {
+          setClaimed(true);
+          if (pollRef.current) { clearInterval(pollRef.current); }
+        }
+      } catch { /* best-effort */ }
+    };
+    check();
+    pollRef.current = setInterval(check, 5_000);
+    return () => { if (pollRef.current) { clearInterval(pollRef.current); } };
+  }, [step, sentToken, selectedMint, claimed]);
 
   // ── Resolve recipient's P2PK public key from their DID ──────────
 
@@ -203,6 +224,7 @@ export const SendToDIDDialog: React.FC<SendToDIDDialogProps> = ({
         }
       }
 
+      setSentToken(encodedToken);
       setStep('done');
       toastSuccess(
         dwnWriteSucceeded ? 'Token sent to recipient\'s DWN' : 'P2PK-locked token created',
@@ -366,11 +388,22 @@ export const SendToDIDDialog: React.FC<SendToDIDDialogProps> = ({
 
         {step === 'done' && (
           <div className="flex flex-col items-center py-6 gap-3">
-            <CheckCircleIcon className="h-8 w-8 text-green-400" />
-            <p className="text-sm font-medium">Transfer sent!</p>
-            <p className="text-xs text-muted-foreground text-center">
-              {formatAmount(parseInt(amount, 10), selectedMint?.unit ?? 'sat')} locked to {recipientDid.slice(0, 20)}...
+            <CheckCircleIcon className={`h-8 w-8 ${claimed ? 'text-green-400' : 'text-primary'}`} />
+            <p className="text-sm font-medium">
+              {claimed ? 'Token claimed!' : 'Transfer sent!'}
             </p>
+            <p className="text-xs text-muted-foreground text-center">
+              {formatAmount(parseInt(amount, 10), selectedMint?.unit ?? 'sat')}
+              {claimed
+                ? ' has been received by the recipient.'
+                : ` locked to ${recipientDid.slice(0, 20)}...`}
+            </p>
+            {!claimed && (
+              <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                <Loader2Icon className="h-3 w-3 animate-spin" />
+                Waiting for recipient to claim...
+              </div>
+            )}
             <button
               onClick={onClose}
               className="mt-2 px-6 py-2 rounded-full bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
