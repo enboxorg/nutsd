@@ -386,28 +386,44 @@ export function useWallet() {
   const loadP2pkKey = useCallback(async () => {
     if (!repo) return;
     try {
-      const record = await repo.p2pkKey.get();
-      if (record) {
-        const data: P2pkKeyData = await record.data.json();
-        setP2pkKey({ publicKey: data.publicKey, privateKey: data.privateKey });
-        // Ensure the public key is published (may not be if created before this feature)
-        publishP2pkPublicKey(data.publicKey);
-        return;
+      let record: any;
+      try {
+        record = await repo.p2pkKey.get();
+        console.log('[nutsd] p2pkKey.get() result:', record ? 'found' : 'not found');
+      } catch (getErr) {
+        console.error('[nutsd] p2pkKey.get() threw:', getErr);
       }
-      // Generate new key and store it
-      const newKey = generateP2pkKeyPair();
-      await repo.p2pkKey.set({
-        data: {
-          publicKey  : newKey.publicKey,
-          privateKey : newKey.privateKey,
-          createdAt  : new Date().toISOString(),
-        } satisfies P2pkKeyData,
-      });
-      setP2pkKey(newKey);
-      console.log('[nutsd] Generated new P2PK key:', newKey.publicKey.slice(0, 12) + '...');
 
-      // Publish the public key to the cashu-transfer protocol so other
-      // users can discover it by querying our DWN (world-readable).
+      if (record) {
+        try {
+          const data: P2pkKeyData = await record.data.json();
+          setP2pkKey({ publicKey: data.publicKey, privateKey: data.privateKey });
+          console.log('[nutsd] Loaded existing P2PK key:', data.publicKey.slice(0, 12) + '...');
+          publishP2pkPublicKey(data.publicKey);
+          return;
+        } catch (decryptErr) {
+          // Don't regenerate — the old key is still referenced by senders.
+          // It will become readable once encryption keys are available.
+          console.error('[nutsd] p2pkKey decrypt/parse failed:', decryptErr);
+          return;
+        }
+      }
+
+      // Only generate if no record exists at all
+      const newKey = generateP2pkKeyPair();
+      try {
+        await repo.p2pkKey.set({
+          data: {
+            publicKey  : newKey.publicKey,
+            privateKey : newKey.privateKey,
+            createdAt  : new Date().toISOString(),
+          } satisfies P2pkKeyData,
+        });
+        console.log('[nutsd] Generated and stored new P2PK key:', newKey.publicKey.slice(0, 12) + '...');
+      } catch (setErr) {
+        console.error('[nutsd] p2pkKey.set() failed:', setErr);
+      }
+      setP2pkKey(newKey);
       publishP2pkPublicKey(newKey.publicKey);
     } catch (err) {
       console.error('Failed to load/create P2PK key:', err);
