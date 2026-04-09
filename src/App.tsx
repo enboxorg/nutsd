@@ -79,6 +79,7 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
     removeMint,
     deleteProofs,
     addTransaction,
+    completeTransaction,
     markTransactionClaimed,
     getUnspentProofsForMint,
     getUnspentProofsByContext,
@@ -618,6 +619,7 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
       {showReceive && (
         <UnifiedReceiveDialog
           mints={mints}
+          mintHealth={mintHealth}
           did={did ?? undefined}
           p2pkPrivateKey={p2pkKey?.privateKey}
           claimToken={receiveClaimToken ?? undefined}
@@ -630,6 +632,7 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
           }}
           onProofsReceived={storeNewProofsForMintUrl}
           onTransactionCreated={recordTransaction}
+          onTransactionCompleted={completeTransaction}
         />
       )}
 
