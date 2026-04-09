@@ -1688,17 +1688,12 @@ export function useWallet() {
    * Only allowed for expired pending invoices — callers should enforce policy.
    */
   const deleteTransaction = useCallback(async (txId: string) => {
-    if (!repo) return;
-    try {
-      const { records } = await repo.transaction.query();
-      const record = records.find((r: { id: string }) => r.id === txId);
-      if (record) {
-        await record.delete();
-        setTransactions(prev => prev.filter(t => t.id !== txId));
-      }
-    } catch (err) {
-      console.warn('[nutsd] Failed to delete transaction:', err);
-    }
+    if (!repo) throw new Error('Wallet not initialized');
+    const { records } = await repo.transaction.query();
+    const record = records.find((r: { id: string }) => r.id === txId);
+    if (!record) throw new Error('Transaction not found');
+    await record.delete();
+    setTransactions(prev => prev.filter(t => t.id !== txId));
   }, [repo]);
 
   /**

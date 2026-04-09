@@ -175,7 +175,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
                         </span>
                       )}
                     </div>
-                    {tx.memo && <p className="text-xs text-muted-foreground truncate">{tx.memo}</p>}
+                    {tx.memo && !isPending && <p className="text-xs text-muted-foreground truncate">{tx.memo}</p>}
                     <div className="text-xs text-muted-foreground">
                       {truncateMintUrl(tx.mintUrl)} &middot; {formatDate(tx.createdAt)}
                     </div>

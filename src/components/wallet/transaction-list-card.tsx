@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   ArrowUpIcon,
   ArrowDownIcon,
@@ -221,9 +221,9 @@ function TransactionRow({
       </div>
 
       <div className="flex items-center gap-1.5 shrink-0 ml-3">
-        {/* Action buttons for pending invoices */}
+        {/* Action buttons for pending invoices — always visible (touch-friendly) */}
         {pendingInvoice && (
-          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+          <div className="flex items-center gap-0.5">
             {/* Show QR — only for active (non-expired) invoices */}
             {!expired && onShowInvoiceQr && (
               <button
@@ -311,6 +311,22 @@ export const TransactionListCard: React.FC<TransactionListCardProps> = ({
   onDeleteTransaction,
 }) => {
   const recent = transactions.slice(0, 10);
+
+  // Schedule a re-render when the nearest pending invoice expires so the UI
+  // transitions from "awaiting payment" → "expired" without user interaction.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const now = Date.now();
+    const nextExpiry = recent.reduce<number | null>((earliest, tx) => {
+      if (tx.type !== 'mint' || tx.status !== 'pending' || !tx.invoice || !tx.expiresAt) return earliest;
+      const exp = new Date(tx.expiresAt).getTime();
+      if (exp <= now) return earliest; // already expired
+      return earliest === null ? exp : Math.min(earliest, exp);
+    }, null);
+    if (nextExpiry === null) return;
+    const timer = setTimeout(() => setTick(t => t + 1), nextExpiry - now + 500);
+    return () => clearTimeout(timer);
+  }, [recent]);
 
   return (
     <div className="rounded-xl bg-card border border-border overflow-hidden">

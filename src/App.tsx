@@ -409,16 +409,21 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
   const handleDeleteTransaction = useCallback(async (tx: Transaction) => {
     if (tx.status !== 'pending') return;
     if (!tx.expiresAt || new Date(tx.expiresAt).getTime() >= Date.now()) return;
-    await deleteTransaction(tx.id);
-    toastSuccess('Invoice removed');
+    try {
+      await deleteTransaction(tx.id);
+      toastSuccess('Invoice removed');
+    } catch (err) {
+      toastError('Failed to remove invoice', err instanceof Error ? err : new Error('Delete failed'));
+    }
   }, [deleteTransaction]);
 
   /** Show the QR code for a pending invoice. */
   const [invoiceQrTx, setInvoiceQrTx] = useState<{ invoice: string; amount: number; unit: string } | null>(null);
   const handleShowInvoiceQr = useCallback((tx: Transaction) => {
-    if (tx.invoice) {
-      setInvoiceQrTx({ invoice: tx.invoice, amount: tx.amount, unit: tx.unit });
-    }
+    // Guard: don't show QR for expired invoices
+    if (!tx.invoice) return;
+    if (tx.expiresAt && new Date(tx.expiresAt).getTime() < Date.now()) return;
+    setInvoiceQrTx({ invoice: tx.invoice, amount: tx.amount, unit: tx.unit });
   }, []);
 
   // ── Unified dialog switchers ──
