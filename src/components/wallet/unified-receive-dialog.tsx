@@ -197,19 +197,39 @@ const ChannelsReceive: React.FC<{
   const [scannedToken, setScannedToken] = useState<string | null>(null);
   const [scannedLnurlWithdraw, setScannedLnurlWithdraw] = useState<string | null>(null);
   const [cameraActive, setCameraActive] = useState(false);
+  const [resolving, setResolving] = useState(false);
 
-  const handleScanOrPaste = useCallback((raw: string) => {
+  const handleScanOrPaste = useCallback(async (raw: string) => {
     setCameraActive(false);
     const detected = detectInput(raw);
     switch (detected.type) {
       case 'cashu-token':
         setScannedToken(detected.value);
         return;
-      case 'lnurl':
-        // Could be pay or withdraw — we assume withdraw in the Receive context.
-        // The LnurlWithdrawPane will handle it and show an error if it's actually pay.
-        setScannedLnurlWithdraw(detected.value);
+      case 'lnurl': {
+        // Resolve the LNURL first to determine if it's pay or withdraw.
+        setResolving(true);
+        try {
+          const url = detected.value.toLowerCase().startsWith('lnurl1')
+            ? decodeLnurl(detected.value)
+            : detected.value;
+          const res = await fetch(url);
+          if (!res.ok) throw new Error(`LNURL endpoint failed: ${res.status}`);
+          const data = await res.json();
+          if (data.tag === 'withdrawRequest') {
+            setScannedLnurlWithdraw(detected.value);
+          } else if (data.tag === 'payRequest') {
+            toastError('LNURL-pay detected', new Error('This is a payment link. Use Send to pay it.'));
+          } else {
+            toastError('Unsupported LNURL', new Error(`Unsupported LNURL type: ${data.tag || 'unknown'}`));
+          }
+        } catch (err) {
+          toastError('LNURL failed', err instanceof Error ? err : new Error('Could not resolve LNURL'));
+        } finally {
+          setResolving(false);
+        }
         return;
+      }
       default:
         toastError('Not recognized', new Error('Expected a Cashu token or LNURL-withdraw link.'));
     }
@@ -246,6 +266,7 @@ const ChannelsReceive: React.FC<{
       mints={mints}
       did={did}
       cameraActive={cameraActive}
+      resolving={resolving}
       onCameraToggle={setCameraActive}
       onScanOrPaste={handleScanOrPaste}
       onClose={onClose}
@@ -260,12 +281,14 @@ const ChannelsReceiveInner: React.FC<{
   mints: Mint[];
   did?: string;
   cameraActive: boolean;
+  /** True while an LNURL is being resolved after scan/paste. */
+  resolving: boolean;
   onCameraToggle: (active: boolean) => void;
   onScanOrPaste: (raw: string) => void;
   onClose: () => void;
   onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
-}> = ({ mints, did, cameraActive, onCameraToggle, onScanOrPaste, onClose, onProofsReceived, onTransactionCreated }) => {
+}> = ({ mints, did, cameraActive, resolving, onCameraToggle, onScanOrPaste, onClose, onProofsReceived, onTransactionCreated }) => {
   // Default channel: Cashu (most universal — works for any cashu wallet).
   // If the user has no DID, hide Address. If they have no mints, hide Lightning.
   const availableChannels = useMemo<ReadonlyArray<SegmentOption<Channel>>>(
@@ -612,17 +635,26 @@ const ChannelsReceiveInner: React.FC<{
 
             {/* Scan/paste bar — detect cashu tokens, LNURL-withdraw links */}
             <div className="space-y-2">
-              <InlineQrScanner
-                active={cameraActive}
-                onRequestStart={() => onCameraToggle(true)}
-                onScan={onScanOrPaste}
-                onError={(msg) => toastError('Scanner error', new Error(msg))}
-              />
-              {!cameraActive && (
-                <ClipboardButton
-                  onPaste={(detected) => onScanOrPaste(detected.value)}
-                  highlightType={null}
-                />
+              {resolving ? (
+                <div className="flex items-center justify-center gap-2 py-3 text-[11px] text-muted-foreground">
+                  <Loader2Icon className="h-3 w-3 animate-spin" />
+                  Resolving LNURL…
+                </div>
+              ) : (
+                <>
+                  <InlineQrScanner
+                    active={cameraActive}
+                    onRequestStart={() => onCameraToggle(true)}
+                    onScan={onScanOrPaste}
+                    onError={(msg) => toastError('Scanner error', new Error(msg))}
+                  />
+                  {!cameraActive && (
+                    <ClipboardButton
+                      onPaste={(detected) => onScanOrPaste(detected.value)}
+                      highlightType={null}
+                    />
+                  )}
+                </>
               )}
             </div>
 
@@ -633,9 +665,9 @@ const ChannelsReceiveInner: React.FC<{
                   Mint
                 </label>
                 <select
-                  value={selectedMint?.url ?? ''}
+                  value={selectedMint?.contextId ?? ''}
                   onChange={(e) => {
-                    setSelectedMint(mints.find((m) => m.url === e.target.value) ?? null);
+                    setSelectedMint(mints.find((m) => m.contextId === e.target.value) ?? null);
                     // Lightning: invalidate any pending invoice since mint changed.
                     if (channel === 'lightning' && lnStep !== 'amount') {
                       stopPollingRef.current?.();
@@ -648,7 +680,7 @@ const ChannelsReceiveInner: React.FC<{
                   className="w-full px-3 py-2.5 rounded-lg bg-background border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-60"
                 >
                   {mints.map((m) => (
-                    <option key={`${m.url}-${m.unit}`} value={m.url}>
+                    <option key={m.contextId} value={m.contextId}>
                       {m.name || truncateMintUrl(m.url)} ({m.unit})
                     </option>
                   ))}
@@ -1003,12 +1035,17 @@ const LnurlWithdrawPane: React.FC<{
   onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
 }> = ({ mints, lnurl, onClose, onProofsReceived, onTransactionCreated }) => {
+  // LNURL-withdraw amounts are defined in millisats/sats by the LN service.
+  // Only sat-unit mints are semantically valid here — a usd-unit mint would
+  // create a quote in cents while the amount is in sats.
+  const satMints = useMemo(() => mints.filter((m) => m.unit === 'sat'), [mints]);
+
   const [step, setStep] = useState<WithdrawStep>('resolving');
   const [withdrawInfo, setWithdrawInfo] = useState<{
     callback: string; k1: string;
     minSats: number; maxSats: number; description: string;
   } | null>(null);
-  const [selectedMint, setSelectedMint] = useState<Mint | null>(mints[0] ?? null);
+  const [selectedMint, setSelectedMint] = useState<Mint | null>(satMints[0] ?? null);
   const [amount, setAmount] = useState('');
   const [receivedAmount, setReceivedAmount] = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
@@ -1027,6 +1064,11 @@ const LnurlWithdrawPane: React.FC<{
 
   // ── Resolve the LNURL to get withdraw info ──
   useEffect(() => {
+    if (satMints.length === 0) {
+      setErrorMsg('LNURL-withdraw requires a sat-unit mint. Add a sat mint first.');
+      setStep('error');
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {
@@ -1056,7 +1098,7 @@ const LnurlWithdrawPane: React.FC<{
       }
     })();
     return () => { cancelled = true; };
-  }, [lnurl]);
+  }, [lnurl, satMints.length]);
 
   const handleWithdraw = async () => {
     if (!withdrawInfo || !selectedMint) return;
@@ -1074,8 +1116,11 @@ const LnurlWithdrawPane: React.FC<{
     }
 
     try {
+      // LNURL-withdraw is always in sats (Lightning denomination).
+      const unit = 'sat';
+
       // Step 1: Create a mint quote (Lightning invoice) at our mint
-      const quote = await createMintQuote(selectedMint.url, amt, selectedMint.unit);
+      const quote = await createMintQuote(selectedMint.url, amt, unit);
       if (!mountedRef.current) return;
 
       // Step 2: Submit the invoice to the LNURL-withdraw service
@@ -1085,7 +1130,7 @@ const LnurlWithdrawPane: React.FC<{
 
       // Step 3: Wait for the service to pay the invoice (poll/WS)
       const mintUrl = selectedMint.url;
-      const mintUnit = selectedMint.unit;
+      const mintUnit = unit;
       const mintCtx = selectedMint.contextId;
       const quoteId = quote.quote;
       const quoteExpiry = quote.expiry ?? null;
@@ -1201,18 +1246,18 @@ const LnurlWithdrawPane: React.FC<{
               <p className="text-xs text-muted-foreground text-center">{withdrawInfo.description}</p>
             )}
 
-            {mints.length > 1 && (
+            {satMints.length > 1 && (
               <div className="space-y-1.5">
                 <label className="text-[10px] uppercase tracking-wider font-medium text-muted-foreground px-1">
                   Mint
                 </label>
                 <select
-                  value={selectedMint?.url ?? ''}
-                  onChange={(e) => setSelectedMint(mints.find((m) => m.url === e.target.value) ?? null)}
+                  value={selectedMint?.contextId ?? ''}
+                  onChange={(e) => setSelectedMint(satMints.find((m) => m.contextId === e.target.value) ?? null)}
                   className="w-full px-3 py-2.5 rounded-lg bg-background border border-border text-sm"
                 >
-                  {mints.map((m) => (
-                    <option key={m.url} value={m.url}>{m.name || truncateMintUrl(m.url)}</option>
+                  {satMints.map((m) => (
+                    <option key={m.contextId} value={m.contextId}>{m.name || truncateMintUrl(m.url)}</option>
                   ))}
                 </select>
               </div>
@@ -1221,7 +1266,7 @@ const LnurlWithdrawPane: React.FC<{
             <AmountInput
               value={amount}
               onChange={setAmount}
-              unit={selectedMint?.unit ?? 'sat'}
+              unit="sat"
               max={withdrawInfo.maxSats}
               autoFocus
             />
@@ -1262,7 +1307,7 @@ const LnurlWithdrawPane: React.FC<{
             <div className="text-center space-y-1">
               <div className="text-lg font-semibold">Received</div>
               <div className="amount-display text-3xl font-bold text-foreground">
-                {formatAmount(receivedAmount, selectedMint?.unit ?? 'sat')}
+                {formatAmount(receivedAmount, 'sat')}
               </div>
             </div>
             <button
