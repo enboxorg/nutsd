@@ -157,6 +157,15 @@ export type TransactionData = {
   memo?: string;
   /** ISO timestamp. */
   createdAt: string;
+  /**
+   * BOLT-11 Lightning invoice for pending `mint` transactions.
+   * Cleared once the invoice is paid and tokens are minted.
+   */
+  invoice?: string;
+  /** Mint quote ID for checking payment status. Cleared on completion. */
+  quoteId?: string;
+  /** ISO timestamp when the invoice/quote expires. */
+  expiresAt?: string;
 };
 
 /**

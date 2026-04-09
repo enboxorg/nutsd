@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import {
   ArrowUpIcon, ArrowDownIcon, SendIcon, DownloadIcon,
   RefreshCwIcon, UsersIcon, XIcon, SearchIcon, FilterIcon,
+  ClockIcon, AlertCircleIcon,
 } from 'lucide-react';
 import { formatAmount, formatDate, truncateMintUrl } from '@/lib/utils';
 import type { Transaction, Mint } from '@/hooks/use-wallet';
@@ -149,22 +150,42 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
             const color = TX_COLORS[tx.type] ?? 'text-muted-foreground';
             const isIncoming = ['mint', 'receive', 'p2p-receive'].includes(tx.type);
             const sign = isIncoming ? '+' : '-';
+            const isPending = tx.type === 'mint' && tx.status === 'pending' && !!tx.invoice;
+            const isExpired = isPending && !!tx.expiresAt && new Date(tx.expiresAt).getTime() < Date.now();
 
             return (
               <div key={tx.id} className="flex items-center justify-between px-4 py-3">
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className={`p-1.5 rounded-md bg-muted ${color}`}>
+                  <div className={`p-1.5 rounded-md bg-muted ${isPending && !isExpired ? 'text-[var(--color-warning)]' : isPending && isExpired ? 'text-muted-foreground' : color}`}>
                     <Icon className="h-3.5 w-3.5" />
                   </div>
                   <div className="min-w-0">
-                    <span className="text-sm font-medium">{label}</span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm font-medium">{label}</span>
+                      {isPending && !isExpired && (
+                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-[var(--color-warning)]/10 text-[var(--color-warning)] text-[10px] font-medium">
+                          <ClockIcon className="h-2.5 w-2.5" />
+                          awaiting payment
+                        </span>
+                      )}
+                      {isPending && isExpired && (
+                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground text-[10px] font-medium">
+                          <AlertCircleIcon className="h-2.5 w-2.5" />
+                          expired
+                        </span>
+                      )}
+                    </div>
                     {tx.memo && <p className="text-xs text-muted-foreground truncate">{tx.memo}</p>}
                     <div className="text-xs text-muted-foreground">
                       {truncateMintUrl(tx.mintUrl)} &middot; {formatDate(tx.createdAt)}
                     </div>
                   </div>
                 </div>
-                <div className={`amount-display text-sm font-medium shrink-0 ml-3 ${isIncoming ? 'text-[var(--color-success)]' : 'text-foreground'}`}>
+                <div className={`amount-display text-sm font-medium shrink-0 ml-3 ${
+                  isPending
+                    ? (isExpired ? 'text-muted-foreground' : 'text-[var(--color-warning)]')
+                    : (isIncoming ? 'text-[var(--color-success)]' : 'text-foreground')
+                }`}>
                   {sign}{formatAmount(tx.amount, tx.unit)}
                 </div>
               </div>

@@ -26,6 +26,8 @@ import { Toaster } from 'sonner';
 import { receiveToken, getMintInfo, checkTokenSpent } from '@/cashu/wallet-ops';
 import { executeCrossMintSwap } from '@/cashu/cross-mint-swap';
 import { acquireWalletLock } from '@/lib/wallet-mutex';
+import { QRCodeDisplay } from '@/components/qr-code';
+import { DialogWrapper } from '@/components/ui/dialog-wrapper';
 
 import { toastError, toastSuccess, formatAmount, truncateMintUrl, truncateMiddle } from '@/lib/utils';
 import { brand } from '@/lib/brand';
@@ -40,9 +42,62 @@ import {
   MoonIcon,
   SunIcon,
   AlertTriangleIcon,
+  CheckIcon,
+  CopyIcon,
+  XIcon,
   DownloadIcon,
   SettingsIcon,
 } from 'lucide-react';
+
+// ---------------------------------------------------------------------------
+// Invoice QR dialog — for re-displaying a pending invoice from activity
+// ---------------------------------------------------------------------------
+
+function InvoiceQrDialog({ invoice, amount, unit, onClose }: {
+  invoice: string;
+  amount: number;
+  unit: string;
+  onClose: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(invoice);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toastError('Copy failed', new Error('Clipboard access denied'));
+    }
+  };
+
+  return (
+    <DialogWrapper open={true} onClose={onClose}>
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-semibold">Pending Invoice</h3>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
+            <XIcon className="h-4 w-4" />
+          </button>
+        </div>
+        <p className="text-xs text-muted-foreground text-center">
+          Waiting for <span className="font-medium text-foreground">{formatAmount(amount, unit)}</span> payment
+        </p>
+        <div className="flex justify-center">
+          <div className="p-4 rounded-2xl bg-white">
+            <QRCodeDisplay value={invoice} size={200} />
+          </div>
+        </div>
+        <button
+          onClick={handleCopy}
+          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-full border border-border text-sm font-medium hover:bg-muted transition-colors"
+        >
+          {copied ? <CheckIcon className="h-4 w-4" /> : <CopyIcon className="h-4 w-4" />}
+          {copied ? 'Copied' : 'Copy Invoice'}
+        </button>
+      </div>
+    </DialogWrapper>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Wallet app (connected)
@@ -80,6 +135,7 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
     deleteProofs,
     addTransaction,
     completeTransaction,
+    deleteTransaction,
     markTransactionClaimed,
     getUnspentProofsForMint,
     getUnspentProofsByContext,
@@ -349,6 +405,22 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
     return isSpent;
   }, [markTransactionClaimed]);
 
+  /** Delete a transaction (only allowed for expired pending invoices). */
+  const handleDeleteTransaction = useCallback(async (tx: Transaction) => {
+    if (tx.status !== 'pending') return;
+    if (!tx.expiresAt || new Date(tx.expiresAt).getTime() >= Date.now()) return;
+    await deleteTransaction(tx.id);
+    toastSuccess('Invoice removed');
+  }, [deleteTransaction]);
+
+  /** Show the QR code for a pending invoice. */
+  const [invoiceQrTx, setInvoiceQrTx] = useState<{ invoice: string; amount: number; unit: string } | null>(null);
+  const handleShowInvoiceQr = useCallback((tx: Transaction) => {
+    if (tx.invoice) {
+      setInvoiceQrTx({ invoice: tx.invoice, amount: tx.amount, unit: tx.unit });
+    }
+  }, []);
+
   // ── Unified dialog switchers ──
 
   /** The Send dialog detected a cashu token → hand off to Receive in claim mode. */
@@ -578,6 +650,8 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
               onViewAll={() => setShowHistory(true)}
               onCheckTokenSpent={handleCheckTokenSpent}
               onReclaimToken={handleReclaimToken}
+              onShowInvoiceQr={handleShowInvoiceQr}
+              onDeleteTransaction={handleDeleteTransaction}
             />
           </>
         )}
@@ -655,6 +729,14 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
           onRemovePin={onRemovePin}
           onUpdatePreferences={updatePreferences}
           onClose={() => setShowSettings(false)}
+        />
+      )}
+      {invoiceQrTx && (
+        <InvoiceQrDialog
+          invoice={invoiceQrTx.invoice}
+          amount={invoiceQrTx.amount}
+          unit={invoiceQrTx.unit}
+          onClose={() => setInvoiceQrTx(null)}
         />
       )}
       {trustMintState && (

@@ -113,6 +113,12 @@ export interface Transaction {
   senderDid?: string;
   memo?: string;
   createdAt: string;
+  /** BOLT-11 invoice for pending mint transactions. Cleared on completion. */
+  invoice?: string;
+  /** Mint quote ID for status checks. Cleared on completion. */
+  quoteId?: string;
+  /** ISO timestamp when the invoice expires. */
+  expiresAt?: string;
 }
 
 export interface WalletPreferences {
@@ -360,6 +366,9 @@ export function useWallet() {
           senderDid        : data.senderDid,
           memo             : data.memo,
           createdAt        : data.createdAt,
+          invoice          : data.invoice,
+          quoteId          : data.quoteId,
+          expiresAt        : data.expiresAt,
         } satisfies Transaction;
       }));
       // Sort newest first
@@ -1624,6 +1633,9 @@ export function useWallet() {
       senderDid        : data.senderDid,
       memo             : data.memo,
       createdAt        : data.createdAt,
+      invoice          : data.invoice,
+      quoteId          : data.quoteId,
+      expiresAt        : data.expiresAt,
     };
     setTransactions(prev => [tx, ...prev]);
     return tx;
@@ -1650,6 +1662,9 @@ export function useWallet() {
             status: 'completed',
             amount: opts?.amount ?? data.amount,
             memo: opts?.memo ?? undefined,
+            // Clear pending invoice fields on completion
+            invoice: undefined,
+            quoteId: undefined,
           },
         });
         setTransactions(prev =>
@@ -1658,11 +1673,31 @@ export function useWallet() {
             status: 'completed' as const,
             amount: opts?.amount ?? t.amount,
             memo: opts?.memo ?? undefined,
+            invoice: undefined,
+            quoteId: undefined,
           } : t),
         );
       }
     } catch (err) {
       console.warn('[nutsd] Failed to complete transaction:', err);
+    }
+  }, [repo]);
+
+  /**
+   * Delete a transaction record from DWN and local state.
+   * Only allowed for expired pending invoices — callers should enforce policy.
+   */
+  const deleteTransaction = useCallback(async (txId: string) => {
+    if (!repo) return;
+    try {
+      const { records } = await repo.transaction.query();
+      const record = records.find((r: { id: string }) => r.id === txId);
+      if (record) {
+        await record.delete();
+        setTransactions(prev => prev.filter(t => t.id !== txId));
+      }
+    } catch (err) {
+      console.warn('[nutsd] Failed to delete transaction:', err);
     }
   }, [repo]);
 
@@ -1924,6 +1959,7 @@ export function useWallet() {
     // Transaction operations
     addTransaction,
     completeTransaction,
+    deleteTransaction,
     markTransactionClaimed,
     refreshTransactions,
 

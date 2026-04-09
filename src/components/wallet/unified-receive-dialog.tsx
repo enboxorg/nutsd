@@ -39,6 +39,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeftIcon,
+  CameraIcon,
   CheckCircleIcon,
   CheckIcon,
   CopyIcon,
@@ -428,10 +429,16 @@ const ChannelsReceiveInner: React.FC<{
         amount: amt, unit: mintUnit,
         expiry: quoteExpiry, source: 'lightning',
       };
+      const expiresAt = quoteExpiry
+        ? new Date(quoteExpiry * 1000).toISOString()
+        : undefined;
       const pendingTxId = await onTransactionCreated({
         type: 'mint', amount: amt, unit: mintUnit, mintUrl,
         status: 'pending',
         memo: serializePendingMintState(pendingState),
+        invoice: quote.request,
+        quoteId,
+        expiresAt,
       });
 
       stopPollingRef.current = subscribeToQuote({
@@ -625,17 +632,31 @@ const ChannelsReceiveInner: React.FC<{
         {/* Main channel UI */}
         {!isSuccessView && !isErrorView && (
           <div className="space-y-4 animate-in fade-in duration-200">
-            {/* QR code */}
+            {/* QR code / camera placeholder */}
             <div className="flex justify-center">
-              <div className="p-4 rounded-2xl bg-white">
-                {qrValue ? (
+              {qrValue ? (
+                <div className="p-4 rounded-2xl bg-white">
                   <QRCodeDisplay value={qrValue} size={200} />
-                ) : (
-                  <div className="w-[200px] h-[200px] flex items-center justify-center text-[11px] text-muted-foreground bg-white rounded">
-                    {channel === 'lightning' ? 'Enter an amount to generate' : ''}
+                </div>
+              ) : channel === 'lightning' ? (
+                <button
+                  type="button"
+                  onClick={() => onCameraToggle(true)}
+                  className="w-[232px] h-[232px] rounded-2xl border-2 border-dashed border-border bg-muted/50 flex flex-col items-center justify-center gap-3 hover:bg-muted hover:border-primary/30 transition-colors cursor-pointer"
+                >
+                  <div className="p-3 rounded-full bg-background border border-border">
+                    <CameraIcon className="h-8 w-8 text-muted-foreground" />
                   </div>
-                )}
-              </div>
+                  <div className="text-center">
+                    <p className="text-xs text-muted-foreground">Tap to scan a QR code</p>
+                    <p className="text-[10px] text-muted-foreground/60 mt-0.5">or create an invoice below</p>
+                  </div>
+                </button>
+              ) : (
+                <div className="p-4 rounded-2xl bg-white">
+                  <div className="w-[200px] h-[200px] flex items-center justify-center text-[11px] text-muted-foreground bg-white rounded" />
+                </div>
+              )}
             </div>
 
             {/* Amount display under the QR */}
@@ -1165,10 +1186,16 @@ const LnurlWithdrawPane: React.FC<{
         amount: amt, unit: mintUnit,
         expiry: quoteExpiry, source: 'lnurl-withdraw',
       };
+      const lnurlExpiresAt = quoteExpiry
+        ? new Date(quoteExpiry * 1000).toISOString()
+        : undefined;
       const pendingTxId = await onTransactionCreated({
         type: 'mint', amount: amt, unit: mintUnit, mintUrl,
         status: 'pending',
         memo: serializePendingMintState(pendingState),
+        invoice: quote.request,
+        quoteId,
+        expiresAt: lnurlExpiresAt,
       });
 
       // Step 3: Submit the invoice to the LNURL-withdraw service.
