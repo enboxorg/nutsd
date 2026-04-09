@@ -506,6 +506,7 @@ const ChannelsReceive: React.FC<{
               options={availableChannels}
               value={channel}
               onChange={handleChannelChange}
+              disabled={channel === 'lightning' && (lnStep === 'invoice' || lnStep === 'waiting')}
               aria-label="Receive channel"
             />
 
@@ -656,11 +657,15 @@ const ClaimTokenPane: React.FC<{
       setMintUrl(mu);
 
       // Best-effort amount/unit parse (may fail for V4 with unknown keysets)
+      let parsedAmount = 0;
+      let parsedUnit = 'sat';
       try {
         const parsed = parseToken(token);
+        parsedAmount = parsed.amount;
+        parsedUnit = parsed.unit ?? 'sat';
         if (!cancelled) {
-          setTokenAmount(parsed.amount);
-          setTokenUnit(parsed.unit ?? 'sat');
+          setTokenAmount(parsedAmount);
+          setTokenUnit(parsedUnit);
         }
       } catch {
         // Expected: V4 token or unparseable — leave amount at 0
@@ -670,16 +675,7 @@ const ClaimTokenPane: React.FC<{
       const known = mints.find((m) => m.url === mu);
       if (!known) {
         if (onUnknownMint) {
-          let amt = 0;
-          let unit = 'sat';
-          try {
-            const parsed = parseToken(token);
-            amt = parsed.amount;
-            unit = parsed.unit ?? 'sat';
-          } catch {
-            // Expected
-          }
-          onUnknownMint(mu, amt, unit, token);
+          onUnknownMint(mu, parsedAmount, parsedUnit, token);
           return;
         }
         setErrorMsg(`Token is from an unknown mint (${truncateMintUrl(mu)}).`);

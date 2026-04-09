@@ -102,6 +102,8 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
 
   // Dialog state — unified send/receive model.
   const [showAddMint, setShowAddMint] = useState(false);
+  /** Pre-filled URL for AddMintDialog (set when Send scanner detects a mint URL). */
+  const [addMintInitialUrl, setAddMintInitialUrl] = useState<string | null>(null);
   const [showSend, setShowSend] = useState(false);
   const [showReceive, setShowReceive] = useState(false);
   /** When set, the Receive dialog opens in claim-token mode instead of channels. */
@@ -353,12 +355,10 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
     setShowReceive(true);
   }, []);
 
-  /** The Send dialog detected a mint URL → hand off to Add Mint. */
-  const handleSwitchToAddMint = useCallback((_mintUrl: string) => {
+  /** The Send dialog detected a mint URL → hand off to Add Mint with the URL pre-filled. */
+  const handleSwitchToAddMint = useCallback((mintUrl: string) => {
     setShowSend(false);
-    // AddMintDialog doesn't currently accept a pre-filled URL; opening it
-    // with an empty state is the simplest path. Future work: thread the
-    // mintUrl through as a prop so the user doesn't have to re-paste.
+    setAddMintInitialUrl(mintUrl);
     setShowAddMint(true);
   }, []);
 
@@ -577,7 +577,8 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
       {showAddMint && (
         <AddMintDialog
           onAdd={handleAddMint}
-          onClose={() => setShowAddMint(false)}
+          onClose={() => { setShowAddMint(false); setAddMintInitialUrl(null); }}
+          initialUrl={addMintInitialUrl ?? undefined}
         />
       )}
 

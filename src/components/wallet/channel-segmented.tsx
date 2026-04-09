@@ -26,6 +26,8 @@ export interface ChannelSegmentedProps<T extends string> {
   options: ReadonlyArray<SegmentOption<T>>;
   value: T;
   onChange: (value: T) => void;
+  /** Disable all options (individual options can also be disabled via `option.disabled`). */
+  disabled?: boolean;
   /** Extra classes on the outer container. */
   className?: string;
   /** Accessible label for the whole group. */
@@ -36,6 +38,7 @@ export function ChannelSegmented<T extends string>({
   options,
   value,
   onChange,
+  disabled = false,
   className = '',
   'aria-label': ariaLabel = 'Select option',
 }: ChannelSegmentedProps<T>) {
@@ -95,8 +98,8 @@ export function ChannelSegmented<T extends string>({
             role="tab"
             aria-selected={isActive}
             title={opt.description}
-            disabled={opt.disabled}
-            onClick={() => { if (!opt.disabled) onChange(opt.value); }}
+            disabled={disabled || opt.disabled}
+            onClick={() => { if (!disabled && !opt.disabled) onChange(opt.value); }}
             className={`relative z-10 flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed ${
               isActive
                 ? 'text-foreground'

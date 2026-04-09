@@ -182,7 +182,6 @@ export const DetectConfirmCard: React.FC<DetectConfirmCardProps> = ({
       return (
         <MismatchCard
           kind="cashu-token"
-          value={detected.value}
           onBack={onBack}
           onSwitch={() => onDone({ kind: 'switch-to-receive', token: detected.value })}
         />
@@ -191,7 +190,6 @@ export const DetectConfirmCard: React.FC<DetectConfirmCardProps> = ({
       return (
         <MismatchCard
           kind="mint-url"
-          value={detected.value}
           onBack={onBack}
           onSwitch={() => onDone({ kind: 'switch-to-add-mint', mintUrl: detected.value })}
         />
@@ -200,7 +198,6 @@ export const DetectConfirmCard: React.FC<DetectConfirmCardProps> = ({
       return (
         <MismatchCard
           kind="unknown"
-          value={detected.value}
           onBack={onBack}
         />
       );
@@ -485,27 +482,27 @@ const InvoiceConfirm: React.FC<{
       <div className="p-3 rounded-xl bg-background border border-border space-y-1.5 text-xs">
         <div className="flex justify-between">
           <span className="text-muted-foreground">Amount</span>
-          <span className="amount-display font-medium">{formatAmount(quoteAmount)}</span>
+          <span className="amount-display font-medium">{formatAmount(quoteAmount, selectedMint?.unit)}</span>
         </div>
         <div className="flex justify-between">
           <span className="text-muted-foreground">Lightning fee</span>
-          <span className="amount-display font-medium">{formatAmount(quoteFee)}</span>
+          <span className="amount-display font-medium">{formatAmount(quoteFee, selectedMint?.unit)}</span>
         </div>
         {inputFee > 0 && (
           <div className="flex justify-between">
             <span className="text-muted-foreground">Mint fee</span>
-            <span className="amount-display font-medium">{formatAmount(inputFee)}</span>
+            <span className="amount-display font-medium">{formatAmount(inputFee, selectedMint?.unit)}</span>
           </div>
         )}
         <div className="border-t border-border pt-1.5 flex justify-between text-sm font-semibold">
           <span>Total</span>
-          <span className="amount-display">{formatAmount(total)}</span>
+          <span className="amount-display">{formatAmount(total, selectedMint?.unit)}</span>
         </div>
       </div>
 
       {insufficient && (
         <p className="text-[11px] text-destructive text-center">
-          Insufficient balance. You need {formatAmount(total)} but only have {formatAmount(balance)}.
+          Insufficient balance. You need {formatAmount(total, selectedMint?.unit)} but only have {formatAmount(balance, selectedMint?.unit)}.
         </p>
       )}
 
@@ -521,7 +518,7 @@ const InvoiceConfirm: React.FC<{
           disabled={insufficient}
           className="flex-1 px-4 py-2.5 rounded-full bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Pay {formatAmount(total)}
+          Pay {formatAmount(total, selectedMint?.unit)}
         </button>
       </div>
     </div>
@@ -549,6 +546,7 @@ const PaymentRequestConfirm: React.FC<{
   const [step, setStep] = useState<PayRequestStep>('confirm');
   const [customAmount, setCustomAmount] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const pendingIdsRef = useRef<string[]>([]);
 
   useEffect(() => { onBusyChange(step === 'sending'); }, [step, onBusyChange]);
 
@@ -590,20 +588,24 @@ const PaymentRequestConfirm: React.FC<{
       return;
     }
 
+    let swapCompleted = false;
     try {
       const stored = ctx.getUnspentProofsByContext(matchingMint.contextId);
       const spentIds = stored.map((p) => p.id);
       const cashuProofs = toCashuProofs(stored);
 
       await ctx.onMarkPending(spentIds);
+      pendingIdsRef.current = spentIds;
 
       const { send, keep } = await swapProofs(
         matchingMint.url, cashuProofs, amount, matchingMint.unit, { includeFees: true },
       );
+      swapCompleted = true;
       const encodedToken = encodeToken(matchingMint.url, send, matchingMint.unit);
 
       if (keep.length > 0) await ctx.onNewProofs(matchingMint.contextId, keep);
       await ctx.onOldProofsSpent(spentIds);
+      pendingIdsRef.current = [];
 
       const txId = await ctx.onTransactionCreated({
         type        : 'send',
@@ -628,6 +630,12 @@ const PaymentRequestConfirm: React.FC<{
         memo    : request.description,
       });
     } catch (err) {
+      // Revert pending proofs if the swap never completed — the mint
+      // hasn't consumed them so they're safe to unlock.
+      if (!swapCompleted && pendingIdsRef.current.length > 0) {
+        ctx.onRevertPending(pendingIdsRef.current).catch(() => {});
+        pendingIdsRef.current = [];
+      }
       setErrorMsg(err instanceof Error ? err.message : String(err));
       setStep('error');
     } finally {
@@ -924,21 +932,21 @@ const LnurlConfirm: React.FC<{
         <div className="p-3 rounded-xl bg-background border border-border space-y-1.5 text-xs">
           <div className="flex justify-between">
             <span className="text-muted-foreground">Amount</span>
-            <span className="amount-display font-medium">{formatAmount(quoteAmount)}</span>
+            <span className="amount-display font-medium">{formatAmount(quoteAmount, selectedMint?.unit)}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-muted-foreground">Lightning fee</span>
-            <span className="amount-display font-medium">{formatAmount(quoteFee)}</span>
+            <span className="amount-display font-medium">{formatAmount(quoteFee, selectedMint?.unit)}</span>
           </div>
           {inputFee > 0 && (
             <div className="flex justify-between">
               <span className="text-muted-foreground">Mint fee</span>
-              <span className="amount-display font-medium">{formatAmount(inputFee)}</span>
+              <span className="amount-display font-medium">{formatAmount(inputFee, selectedMint?.unit)}</span>
             </div>
           )}
           <div className="border-t border-border pt-1.5 flex justify-between text-sm font-semibold">
             <span>Total</span>
-            <span className="amount-display">{formatAmount(total)}</span>
+            <span className="amount-display">{formatAmount(total, selectedMint?.unit)}</span>
           </div>
         </div>
 
@@ -953,7 +961,7 @@ const LnurlConfirm: React.FC<{
             disabled={insufficient}
             className="flex-1 px-4 py-2.5 rounded-full bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Pay {formatAmount(total)}
+            Pay {formatAmount(total, selectedMint?.unit)}
           </button>
         </div>
       </div>
@@ -1087,7 +1095,13 @@ const DidConfirm: React.FC<{
 
   const balance = selectedMint ? (ctx.mintBalances.get(selectedMint.url) ?? 0) : 0;
   const amtNum = parseInt(amount, 10) || 0;
-  const canSend = amtNum > 0 && amtNum <= balance && !!recipientPubkey && !!selectedMint;
+  const inputFee = useMemo(() => {
+    if (!selectedMint) return 0;
+    const stored = ctx.getUnspentProofs(selectedMint.url);
+    return estimateInputFee(toCashuProofs(stored), ctx.keysetFeeMap);
+  }, [selectedMint, ctx]);
+  const total = amtNum + inputFee;
+  const canSend = amtNum > 0 && total <= balance && !!recipientPubkey && !!selectedMint;
 
   const handleSend = async () => {
     if (!canSend || !selectedMint || !ctx.senderDid) return;
@@ -1269,10 +1283,27 @@ const DidConfirm: React.FC<{
         value={amount}
         onChange={setAmount}
         unit={selectedMint?.unit ?? 'sat'}
-        max={balance}
+        max={Math.max(0, balance - inputFee)}
         helper={`Balance: ${formatAmount(balance, selectedMint?.unit ?? 'sat')}`}
-        error={amtNum > 0 && amtNum > balance ? 'Insufficient balance' : null}
+        error={amtNum > 0 && total > balance ? 'Insufficient balance' : null}
       />
+
+      {amtNum > 0 && inputFee > 0 && (
+        <div className="p-3 rounded-xl bg-background border border-border space-y-1.5 text-xs">
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Amount</span>
+            <span className="amount-display font-medium">{formatAmount(amtNum, selectedMint?.unit)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Mint fee</span>
+            <span className="amount-display font-medium">{formatAmount(inputFee, selectedMint?.unit)}</span>
+          </div>
+          <div className="border-t border-border pt-1.5 flex justify-between text-sm font-semibold">
+            <span>Total</span>
+            <span className="amount-display">{formatAmount(total, selectedMint?.unit)}</span>
+          </div>
+        </div>
+      )}
 
       <div className="space-y-1.5">
         <label className="text-[10px] uppercase tracking-wider font-medium text-muted-foreground px-1">
@@ -1299,7 +1330,7 @@ const DidConfirm: React.FC<{
           disabled={!canSend}
           className="flex-1 px-4 py-2.5 rounded-full bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Send {amtNum > 0 ? formatAmount(amtNum, selectedMint?.unit) : ''}
+          Send {amtNum > 0 ? formatAmount(total, selectedMint?.unit) : ''}
         </button>
       </div>
     </div>
@@ -1339,7 +1370,6 @@ const MISMATCH_COPY: Record<MismatchKind, {
 
 const MismatchCard: React.FC<{
   kind: MismatchKind;
-  value: string;
   onBack: () => void;
   onSwitch?: () => void;
 }> = ({ kind, onBack, onSwitch }) => {

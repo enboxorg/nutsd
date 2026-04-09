@@ -331,11 +331,12 @@ export const UnifiedSendDialog: React.FC<UnifiedSendDialogProps> = (props) => {
   }, []);
 
   const backToCreateEntry = useCallback(() => {
+    setCreateMintState(mints[0] ?? null);
     setCreateAmount('');
     setCreatedToken('');
     setCreatedTxId(undefined);
     setStep('create-token');
-  }, []);
+  }, [mints]);
 
   // Auto-focus first mount → good for keyboard users.
   useEffect(() => {

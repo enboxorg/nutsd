@@ -250,6 +250,13 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
           <div className="text-[11px] text-muted-foreground leading-relaxed">
             {errorMsg}
           </div>
+          <button
+            type="button"
+            onClick={onRequestStart}
+            className="mt-1 px-4 py-1.5 rounded-full bg-primary text-primary-foreground text-xs font-medium hover:opacity-90 transition-opacity"
+          >
+            Try again
+          </button>
         </div>
       )}
     </div>
