@@ -6,6 +6,8 @@ import { encodeToken } from '@/cashu/token-utils';
 import { acquireWalletLock } from '@/lib/wallet-mutex';
 import { CashuTransferProtocol, assertP2PKLocked, type TransferData, type P2pkPublicKeyData } from '@/protocol/cashu-transfer-protocol';
 import { DialogWrapper } from '@/components/ui/dialog-wrapper';
+import { useTokenClaimStatus } from '@/hooks/use-token-claim-status';
+import { ClaimStatusIndicator } from '@/components/wallet/claim-status-indicator';
 import type { Mint, StoredProof } from '@/hooks/use-wallet';
 import type { Proof } from '@cashu/cashu-ts';
 import type { TransactionData } from '@/protocol/cashu-wallet-protocol';
@@ -23,6 +25,8 @@ interface SendToDIDDialogProps {
   onMarkPending: (ids: string[]) => Promise<void>;
   onRevertPending: (ids: string[]) => Promise<void>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
+  /** Called when the background checker confirms the token was claimed. */
+  onMarkClaimed: (txId: string) => Promise<void>;
 }
 
 type Step = 'recipient' | 'amount' | 'sending' | 'done' | 'error';
@@ -40,6 +44,7 @@ export const SendToDIDDialog: React.FC<SendToDIDDialogProps> = ({
   onMarkPending,
   onRevertPending,
   onTransactionCreated,
+  onMarkClaimed,
 }) => {
   const [step, setStep] = useState<Step>('recipient');
   const [recipientDid, setRecipientDid] = useState('');
@@ -49,9 +54,23 @@ export const SendToDIDDialog: React.FC<SendToDIDDialogProps> = ({
   const [amount, setAmount] = useState('');
   const [memo, setMemo] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [sentToken, setSentToken] = useState('');
+  const [txId, setTxId] = useState<string | undefined>();
   const busyRef = useRef(false);
 
   const balance = selectedMint ? (mintBalances.get(selectedMint.url) ?? 0) : 0;
+
+  // --- Token claim status tracking via shared hook ---
+  const { status: claimStatus, checkNow } = useTokenClaimStatus({
+    token    : sentToken,
+    mintUrl  : selectedMint?.url ?? '',
+    unit     : selectedMint?.unit ?? 'sat',
+    enabled  : step === 'done' && !!sentToken,
+    onClaimed: async () => {
+      if (txId) { await onMarkClaimed(txId); }
+    },
+  });
+  const claimed = claimStatus === 'claimed';
 
   // ── Resolve recipient's P2PK public key from their DID ──────────
 
@@ -165,16 +184,18 @@ export const SendToDIDDialog: React.FC<SendToDIDDialogProps> = ({
       // The token is embedded in the transaction's cashuToken field.
       if (keep.length > 0) await onNewProofs(selectedMint.contextId, keep);
 
-      await onTransactionCreated({
-        type: 'p2p-send',
-        amount: amountNum,
-        unit: selectedMint.unit,
-        mintUrl: selectedMint.url,
-        status: 'completed',
-        cashuToken: encodedToken,
-        recipientDid: recipientDid.trim() || undefined,
-        memo: memo.trim() || undefined,
+      const createdTxId = await onTransactionCreated({
+        type         : 'p2p-send',
+        amount       : amountNum,
+        unit         : selectedMint.unit,
+        mintUrl      : selectedMint.url,
+        status       : 'completed',
+        claimStatus  : 'pending',
+        cashuToken   : encodedToken,
+        recipientDid : recipientDid.trim() || undefined,
+        memo         : memo.trim() || undefined,
       });
+      if (typeof createdTxId === 'string') { setTxId(createdTxId); }
 
       // Now safe to delete old proofs — change + token are persisted.
       await onOldProofsSpent(spentIds);
@@ -203,6 +224,7 @@ export const SendToDIDDialog: React.FC<SendToDIDDialogProps> = ({
         }
       }
 
+      setSentToken(encodedToken);
       setStep('done');
       toastSuccess(
         dwnWriteSucceeded ? 'Token sent to recipient\'s DWN' : 'P2PK-locked token created',
@@ -366,11 +388,19 @@ export const SendToDIDDialog: React.FC<SendToDIDDialogProps> = ({
 
         {step === 'done' && (
           <div className="flex flex-col items-center py-6 gap-3">
-            <CheckCircleIcon className="h-8 w-8 text-green-400" />
-            <p className="text-sm font-medium">Transfer sent!</p>
-            <p className="text-xs text-muted-foreground text-center">
-              {formatAmount(parseInt(amount, 10), selectedMint?.unit ?? 'sat')} locked to {recipientDid.slice(0, 20)}...
+            <CheckCircleIcon className={`h-8 w-8 ${claimed ? 'text-green-400' : 'text-primary'}`} />
+            <p className="text-sm font-medium">
+              {claimed ? 'Token claimed!' : 'Transfer sent!'}
             </p>
+            <p className="text-xs text-muted-foreground text-center">
+              {formatAmount(parseInt(amount, 10), selectedMint?.unit ?? 'sat')}
+              {claimed
+                ? ' has been received by the recipient.'
+                : ` locked to ${recipientDid.slice(0, 20)}...`}
+            </p>
+            {!claimed && (
+              <ClaimStatusIndicator status={claimStatus} onCheckNow={() => checkNow().catch(() => {})} />
+            )}
             <button
               onClick={onClose}
               className="mt-2 px-6 py-2 rounded-full bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"

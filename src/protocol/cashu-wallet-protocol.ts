@@ -134,6 +134,17 @@ export type TransactionData = {
   /** Transaction status. */
   status: 'pending' | 'completed' | 'failed';
   /**
+   * Claim status for 'send' and 'p2p-send' transactions.
+   * - 'pending': token created, waiting for recipient to claim
+   * - 'claimed': all proofs are SPENT at the mint (NUT-07)
+   * - 'unknown': mint does not support NUT-07 or check failed
+   *
+   * Undefined for non-send transactions.
+   */
+  claimStatus?: 'pending' | 'claimed' | 'unknown';
+  /** ISO timestamp when the token was confirmed claimed. */
+  claimedAt?: string;
+  /**
    * Cashu token string for 'send' transactions.
    * Encrypted at the DWN layer. Cleared once confirmed spent.
    */

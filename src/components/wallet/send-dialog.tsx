@@ -1,11 +1,13 @@
 import { useState, useRef } from 'react';
-import { Loader2Icon, XIcon, SendIcon, CopyIcon, CheckIcon } from 'lucide-react';
+import { Loader2Icon, XIcon, SendIcon, CopyIcon, CheckIcon, CheckCircleIcon } from 'lucide-react';
 import { QRCodeDisplay } from '@/components/qr-code';
 import { toastError, toastSuccess, truncateMintUrl, formatAmount } from '@/lib/utils';
 import { swapProofs, estimateInputFee } from '@/cashu/wallet-ops';
 import { encodeToken } from '@/cashu/token-utils';
 import { acquireWalletLock } from '@/lib/wallet-mutex';
 import { DialogWrapper } from '@/components/ui/dialog-wrapper';
+import { useTokenClaimStatus } from '@/hooks/use-token-claim-status';
+import { ClaimStatusIndicator } from '@/components/wallet/claim-status-indicator';
 import type { Mint, StoredProof } from '@/hooks/use-wallet';
 import type { Proof } from '@cashu/cashu-ts';
 import type { TransactionData } from '@/protocol/cashu-wallet-protocol';
@@ -25,6 +27,8 @@ interface SendDialogProps {
   /** Mark proofs as pending in DWN before sending to mint. */
   onMarkPending: (ids: string[]) => Promise<void>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
+  /** Called when the background checker confirms the token was claimed. */
+  onMarkClaimed: (txId: string) => Promise<void>;
 }
 
 type Step = 'amount' | 'token';
@@ -40,6 +44,7 @@ export const SendDialog: React.FC<SendDialogProps> = ({
   onOldProofsSpent,
   onMarkPending,
   onTransactionCreated,
+  onMarkClaimed,
 }) => {
   const [selectedMint, setSelectedMint] = useState<Mint | null>(mints[0] ?? null);
   const [amount, setAmount] = useState('');
@@ -47,7 +52,21 @@ export const SendDialog: React.FC<SendDialogProps> = ({
   const [token, setToken] = useState('');
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [txId, setTxId] = useState<string | undefined>();
   const busyRef = useRef(false);
+
+  // --- Claim status tracking ---
+  const { status: claimStatus, checkNow } = useTokenClaimStatus({
+    token,
+    mintUrl : selectedMint?.url ?? '',
+    unit    : selectedMint?.unit ?? 'sat',
+    enabled : step === 'token' && !!token,
+    onClaimed: async () => {
+      if (txId) { await onMarkClaimed(txId); }
+    },
+  });
+
+  const claimed = claimStatus === 'claimed';
 
   const balance = selectedMint ? (mintBalances.get(selectedMint.url) ?? 0) : 0;
   const feePpk = selectedMint ? (mintFeePpk.get(selectedMint.url) ?? 0) : 0;
@@ -114,14 +133,16 @@ export const SendDialog: React.FC<SendDialogProps> = ({
 
       // Record transaction in DWN -- cashuToken is encrypted at the DWN layer
       // (encryptionRequired: true on the transaction type). Cleared once spent.
-      await onTransactionCreated({
-        type: 'send',
-        amount: amountNum,
-        unit: selectedMint.unit,
-        mintUrl: selectedMint.url,
-        status: 'completed',
-        cashuToken: encodedToken,
+      const createdTxId = await onTransactionCreated({
+        type        : 'send',
+        amount      : amountNum,
+        unit        : selectedMint.unit,
+        mintUrl     : selectedMint.url,
+        status      : 'completed',
+        claimStatus : 'pending',
+        cashuToken  : encodedToken,
       });
+      if (typeof createdTxId === 'string') { setTxId(createdTxId); }
 
       setStep('token');
     } catch (err) {
@@ -236,31 +257,55 @@ export const SendDialog: React.FC<SendDialogProps> = ({
 
         {step === 'token' && (
           <div className="space-y-4">
-            <div className="flex justify-center">
-              <QRCodeDisplay value={token} size={180} />
-            </div>
-            <p className="text-sm font-semibold text-center">{formatAmount(parseInt(amount), selectedMint?.unit)}</p>
-            <p className="text-xs text-muted-foreground">
-              Share this Cashu token with the recipient:
-            </p>
-            <div className="p-3 rounded-lg bg-background border border-border max-h-32 overflow-y-auto">
-              <div className="token-string text-muted-foreground">
-                {token}
-              </div>
-            </div>
-            <button
-              onClick={handleCopy}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-border text-sm font-medium hover:bg-muted transition-colors"
-            >
-              {copied ? <CheckIcon className="h-4 w-4" /> : <CopyIcon className="h-4 w-4" />}
-              {copied ? 'Copied' : 'Copy Token'}
-            </button>
-            <button
-              onClick={onClose}
-              className="w-full px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity"
-            >
-              Done
-            </button>
+            {claimed ? (
+              <>
+                <div className="flex flex-col items-center py-4 gap-3">
+                  <CheckCircleIcon className="h-10 w-10 text-green-400" />
+                  <p className="text-sm font-semibold text-green-400">Token claimed!</p>
+                  <p className="text-xs text-muted-foreground text-center">
+                    {formatAmount(parseInt(amount), selectedMint?.unit)} has been received by the recipient.
+                  </p>
+                </div>
+                <button
+                  onClick={onClose}
+                  className="w-full px-4 py-2 rounded-full bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity"
+                >
+                  Done
+                </button>
+              </>
+            ) : (
+              <>
+                <div className="flex justify-center">
+                  <QRCodeDisplay value={token} size={180} />
+                </div>
+                <p className="text-sm font-semibold text-center">{formatAmount(parseInt(amount), selectedMint?.unit)}</p>
+                <p className="text-xs text-muted-foreground">
+                  Share this Cashu token with the recipient:
+                </p>
+                <div className="p-3 rounded-lg bg-background border border-border max-h-32 overflow-y-auto">
+                  <div className="token-string text-muted-foreground">
+                    {token}
+                  </div>
+                </div>
+
+                {/* Claim status indicator — adapts to mint capabilities and timing */}
+                <ClaimStatusIndicator status={claimStatus} onCheckNow={() => checkNow().catch(() => {})} />
+
+                <button
+                  onClick={handleCopy}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-border text-sm font-medium hover:bg-muted transition-colors"
+                >
+                  {copied ? <CheckIcon className="h-4 w-4" /> : <CopyIcon className="h-4 w-4" />}
+                  {copied ? 'Copied' : 'Copy Token'}
+                </button>
+                <button
+                  onClick={onClose}
+                  className="w-full px-4 py-2 rounded-full text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  Close
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>
