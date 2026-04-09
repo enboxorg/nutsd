@@ -1356,7 +1356,7 @@ export function useWallet() {
         await addProof(mintContextId, proof);
       },
       ensureMint: async (mintUrl: string, unit: string) => {
-        let mint = mints.find(m => m.url === mintUrl);
+        const mint = mints.find(m => m.url === mintUrl);
         if (!mint) {
           try {
             const newMint = await addMint({ url: mintUrl, unit, active: true });

@@ -9,8 +9,9 @@
  * 1. Cashu token (cashuA / cashuB prefix)
  * 2. Lightning invoice (lnbc / lntb / lnbs prefix)
  * 3. LNURL (lnurl1 bech32 prefix)
- * 4. Lightning address (user@domain)
- * 5. Mint URL (https:// URL)
+ * 4. DID (did: prefix — any method; resolver validates)
+ * 5. Lightning address (user@domain)
+ * 6. Mint URL (https:// URL)
  *
  * @module
  */
@@ -19,10 +20,11 @@ export type DetectedInput =
   | { type: 'payment-request';  value: string }
   | { type: 'cashu-token';       value: string }
   | { type: 'lightning-invoice'; value: string }
-  | { type: 'lnurl';            value: string }
+  | { type: 'lnurl';             value: string }
   | { type: 'lightning-address'; value: string }
-  | { type: 'mint-url';         value: string }
-  | { type: 'unknown';          value: string };
+  | { type: 'mint-url';          value: string }
+  | { type: 'did';               value: string }
+  | { type: 'unknown';           value: string };
 
 /**
  * Detect the type of a pasted or scanned string.
@@ -63,18 +65,38 @@ export function detectInput(raw: string): DetectedInput {
     return { type: 'lnurl', value: trimmed };
   }
 
-  // 4. Lightning address (user@domain.tld)
-  //    Must look like an email but NOT be a cashu/lnurl/invoice
+  // 4. DID (did:<method>:<identifier>). We accept any DID method and let the
+  //    resolver decide whether it's actually resolvable — this keeps detection
+  //    fast and forward-compatible (did:dht, did:web, did:key, etc. all pass).
+  if (isDid(trimmed)) {
+    return { type: 'did', value: trimmed };
+  }
+
+  // 5. Lightning address (user@domain.tld)
+  //    Must look like an email but NOT be a cashu/lnurl/invoice/did
   if (isLightningAddress(trimmed)) {
     return { type: 'lightning-address', value: trimmed };
   }
 
-  // 5. Mint URL (https://...)
+  // 6. Mint URL (https://...)
   if (isMintUrl(trimmed)) {
     return { type: 'mint-url', value: normalizeMintUrl(trimmed) };
   }
 
   return { type: 'unknown', value: trimmed };
+}
+
+/**
+ * Check if a string looks like a DID (Decentralized Identifier).
+ * Matches `did:<method>:<identifier>` where:
+ *   - method is 1+ lowercase alphanumerics
+ *   - identifier is 1+ non-whitespace characters
+ *
+ * Intentionally permissive — the actual resolution happens in the send flow
+ * via `enbox.using(...)` which knows which methods are supported.
+ */
+function isDid(str: string): boolean {
+  return /^did:[a-z0-9]+:[^\s]+$/i.test(str);
 }
 
 /**
