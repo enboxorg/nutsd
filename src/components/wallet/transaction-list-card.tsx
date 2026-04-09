@@ -65,7 +65,7 @@ const TX_COLORS: Record<string, string> = {
  * Covers both pre-expiry (`status: 'pending'`) and post-restart expired
  * invoices that startup recovery rewrites to `status: 'failed'`.
  */
-function isUnfulfilledInvoice(tx: Transaction): boolean {
+export function isUnfulfilledInvoice(tx: Transaction): boolean {
   return tx.type === 'mint' && (tx.status === 'pending' || tx.status === 'failed') && !!tx.invoice;
 }
 
@@ -82,12 +82,15 @@ export function TransactionRow({
   onReclaimToken,
   onShowInvoiceQr,
   onDeleteTransaction,
+  expanded,
 }: {
   tx: Transaction;
   onCheckSpent?: (tx: Transaction) => Promise<boolean | null>;
   onReclaimToken?: (tx: Transaction) => Promise<void>;
   onShowInvoiceQr?: (tx: Transaction) => void;
   onDeleteTransaction?: (tx: Transaction) => Promise<void>;
+  /** When true, action buttons are always visible and memo is shown (used in full history view). */
+  expanded?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const [reclaiming, setReclaiming] = useState(false);
@@ -220,6 +223,7 @@ export function TransactionRow({
               </span>
             )}
           </div>
+          {expanded && tx.memo && !unfulfilled && <p className="text-xs text-muted-foreground truncate">{tx.memo}</p>}
           <div className="text-xs text-muted-foreground">
             {truncateMintUrl(tx.mintUrl)} &middot; {formatDate(tx.createdAt)}
           </div>
@@ -258,7 +262,7 @@ export function TransactionRow({
         )}
         {/* Action buttons for sent tokens */}
         {hasCopyableToken && (
-          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+          <div className={`flex items-center gap-0.5 ${expanded ? '' : 'opacity-0 group-hover:opacity-100 transition-opacity'}`}>
             {onReclaimToken && spentState === 'pending' && (
               <button
                 onClick={handleReclaim}

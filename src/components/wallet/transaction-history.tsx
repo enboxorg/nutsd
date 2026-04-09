@@ -1,7 +1,7 @@
-import { useState, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { XIcon, SearchIcon, FilterIcon } from 'lucide-react';
 import { truncateMintUrl } from '@/lib/utils';
-import { TransactionRow } from '@/components/wallet/transaction-list-card';
+import { TransactionRow, isUnfulfilledInvoice } from '@/components/wallet/transaction-list-card';
 import type { Transaction, Mint } from '@/hooks/use-wallet';
 
 interface TransactionHistoryProps {
@@ -59,8 +59,30 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
     return result;
   }, [transactions, typeFilter, mintFilter, search]);
 
-  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
-  const pageItems = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+
+  // Clamp page when the filtered list shrinks (e.g. after deleting an item).
+  useEffect(() => {
+    setPage(p => Math.min(p, totalPages - 1));
+  }, [totalPages]);
+
+  const safePage = Math.min(page, totalPages - 1);
+  const pageItems = filtered.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
+
+  // Re-render when the nearest pending invoice on the current page expires.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const now = Date.now();
+    const nextExpiry = pageItems.reduce<number | null>((earliest, tx) => {
+      if (!isUnfulfilledInvoice(tx) || !tx.expiresAt || tx.status === 'failed') return earliest;
+      const exp = new Date(tx.expiresAt).getTime();
+      if (exp <= now) return earliest;
+      return earliest === null ? exp : Math.min(earliest, exp);
+    }, null);
+    if (nextExpiry === null) return;
+    const timer = setTimeout(() => setTick(t => t + 1), nextExpiry - now + 500);
+    return () => clearTimeout(timer);
+  }, [pageItems]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -134,6 +156,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
             <TransactionRow
               key={tx.id}
               tx={tx}
+              expanded
               onCheckSpent={onCheckTokenSpent}
               onReclaimToken={onReclaimToken}
               onShowInvoiceQr={onShowInvoiceQr}
@@ -147,17 +170,17 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
           <div className="flex items-center justify-between pt-2">
             <button
               onClick={() => setPage(p => Math.max(0, p - 1))}
-              disabled={page === 0}
+              disabled={safePage === 0}
               className="px-3 py-1.5 rounded-lg border border-border text-xs hover:bg-muted disabled:opacity-50 transition-colors"
             >
               Previous
             </button>
             <span className="text-xs text-muted-foreground">
-              Page {page + 1} of {totalPages}
+              Page {safePage + 1} of {totalPages}
             </span>
             <button
               onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
-              disabled={page >= totalPages - 1}
+              disabled={safePage >= totalPages - 1}
               className="px-3 py-1.5 rounded-lg border border-border text-xs hover:bg-muted disabled:opacity-50 transition-colors"
             >
               Next
