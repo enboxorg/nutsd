@@ -78,7 +78,12 @@ export type MintRecoveryResult =
  * Attempt to resume a single pending mint quote.
  *
  * - PAID → mint tokens and return proofs
- * - ISSUED → already minted (likely by another session)
+ * - ISSUED → already minted by a previous attempt. This does NOT guarantee
+ *   the proofs are in the local wallet. There is a pre-stash crash window:
+ *   mintTokens() may have succeeded but the app crashed before the stash
+ *   write, leaving proofs unrecoverable. Callers should mark this as
+ *   completed but log a warning — the stash (if it exists) will have
+ *   already been recovered by an earlier startup step.
  * - Expired → return expired status
  * - UNPAID and not expired → still pending, leave for next check
  */

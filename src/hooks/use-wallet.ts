@@ -1531,8 +1531,32 @@ export function useWallet() {
               break;
             }
             case 'issued':
-              await record.update({ data: { ...tx, status: 'completed', memo: 'Recovered (ISSUED)' } });
-              console.log(`[nutsd] Pending receive ISSUED: ${state.quoteId}`);
+              // ISSUED = tokens were already minted by a previous attempt.
+              //
+              // IMPORTANT: This does NOT guarantee the proofs are in the
+              // local wallet. There is a pre-stash crash window where
+              // mintTokens() succeeded but the app crashed before the WAL
+              // stash write. In that case proofs are unrecoverable — the
+              // mint won't re-issue, and no stash exists to recover from.
+              //
+              // The stash recovery step ran earlier in the startup sequence.
+              // If a stash exists, those proofs are already recovered. If
+              // no stash exists, the proofs fell into the ~ms pre-stash
+              // window and are lost. Keeping this pending would just hit
+              // ISSUED forever with no recovery path — marking completed
+              // (with a warning) is the honest outcome.
+              await record.update({
+                data: {
+                  ...tx,
+                  status: 'completed',
+                  memo: 'Recovered (ISSUED — proofs may have been recovered via stash, or lost in pre-stash crash window)',
+                },
+              });
+              console.warn(
+                `[nutsd:financial] Pending receive ISSUED: ${state.quoteId} — ` +
+                'proofs should have been recovered by stash recovery; if not, ' +
+                'they fell into the pre-stash crash window and are unrecoverable.',
+              );
               recovered = true;
               break;
             case 'expired':

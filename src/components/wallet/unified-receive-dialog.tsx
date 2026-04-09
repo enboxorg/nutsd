@@ -1085,7 +1085,10 @@ const LnurlWithdrawPane: React.FC<{
   const stopPollingRef = useRef<(() => void) | undefined>();
   const mountedRef = useRef(true);
 
-  const preventClose = step === 'withdrawing' || step === 'waiting';
+  // Only block dismissal during the brief submit phase. During 'waiting',
+  // the pending state is persisted and startup recovery can resume — the
+  // user is free to close the dialog without losing the flow.
+  const preventClose = step === 'withdrawing';
 
   useEffect(() => {
     mountedRef.current = true;
@@ -1139,35 +1142,24 @@ const LnurlWithdrawPane: React.FC<{
     if (isNaN(amt) || amt < withdrawInfo.minSats || amt > withdrawInfo.maxSats) return;
 
     setStep('withdrawing');
-    let releaseLock: (() => void) | undefined;
-    try {
-      releaseLock = await acquireWalletLock('lnurl-withdraw');
-    } catch {
-      toastError('Wallet busy', new Error('Another wallet operation is in progress.'));
-      setStep('ready');
-      return;
-    }
+
+    // Capture values in closure before async work.
+    const mintUrl = selectedMint.url;
+    const mintUnit = 'sat'; // LNURL-withdraw is always sats
+    const mintCtx = selectedMint.contextId;
 
     try {
-      // LNURL-withdraw is always in sats (Lightning denomination).
-      const unit = 'sat';
-
-      // Step 1: Create a mint quote (Lightning invoice) at our mint
-      const quote = await createMintQuote(selectedMint.url, amt, unit);
+      // Step 1: Create a mint quote (Lightning invoice) at our mint.
+      // No wallet lock needed — quote creation is idempotent.
+      const quote = await createMintQuote(mintUrl, amt, mintUnit);
       if (!mountedRef.current) return;
 
-      // Step 2: Submit the invoice to the LNURL-withdraw service
-      await submitLnurlWithdraw(withdrawInfo.callback, withdrawInfo.k1, quote.request);
-      if (!mountedRef.current) return;
-      setStep('waiting');
-
-      // Step 3: Persist pending state for recovery, then wait for payment.
-      const mintUrl = selectedMint.url;
-      const mintUnit = unit;
-      const mintCtx = selectedMint.contextId;
       const quoteId = quote.quote;
       const quoteExpiry = quote.expiry ?? null;
 
+      // Step 2: Persist pending state BEFORE submitting to the external
+      // service. Once the service has the invoice it may pay at any time,
+      // so the recovery record must already exist. (WAL principle.)
       const pendingState: PendingMintState = {
         quoteId, mintUrl, mintContextId: mintCtx,
         amount: amt, unit: mintUnit,
@@ -1179,6 +1171,16 @@ const LnurlWithdrawPane: React.FC<{
         memo: serializePendingMintState(pendingState),
       });
 
+      // Step 3: Submit the invoice to the LNURL-withdraw service.
+      // If this fails, the pending record exists but the service never
+      // got the invoice — recovery will see UNPAID and eventually expire.
+      await submitLnurlWithdraw(withdrawInfo.callback, withdrawInfo.k1, quote.request);
+      if (!mountedRef.current) return;
+      setStep('waiting');
+
+      // Step 4: Wait for payment. The wallet lock is NOT held here —
+      // only acquired briefly inside onPaid for the mint/store critical
+      // section (same pattern as Lightning receive).
       stopPollingRef.current = subscribeToQuote({
         mintUrl,
         quoteId,
@@ -1186,7 +1188,9 @@ const LnurlWithdrawPane: React.FC<{
         callbacks: {
           onPaid: async () => {
             if (!mountedRef.current) return;
+            let releaseLock: (() => void) | undefined;
             try {
+              releaseLock = await acquireWalletLock('lnurl-withdraw-mint');
               const proofs = await mintTokens(mintUrl, amt, quoteId, mintUnit);
               if (!mountedRef.current) return;
 
@@ -1219,18 +1223,15 @@ const LnurlWithdrawPane: React.FC<{
               }
             } finally {
               releaseLock?.();
-              releaseLock = undefined;
             }
           },
           onExpired: () => {
-            releaseLock?.();
             if (mountedRef.current) {
               setErrorMsg('The invoice expired before the service paid it.');
               setStep('error');
             }
           },
           onIssued: () => {
-            releaseLock?.();
             if (mountedRef.current) {
               setErrorMsg('These tokens were already minted (possibly in another session).');
               setStep('error');
@@ -1245,7 +1246,6 @@ const LnurlWithdrawPane: React.FC<{
         expiry: quoteExpiry,
       });
     } catch (err) {
-      releaseLock?.();
       setErrorMsg(err instanceof Error ? err.message : String(err));
       setStep('error');
     }
