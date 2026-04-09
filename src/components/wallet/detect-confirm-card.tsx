@@ -59,6 +59,7 @@ import {
   resolveLightningAddress,
   resolveLnurl,
   requestLnurlInvoice,
+  LnurlWithdrawDetectedError,
   msatToSats,
   satsToMsat,
   type LnurlPayResponse,
@@ -111,7 +112,9 @@ export type SendOutcome =
   /** The detected input was actually a receive — pivot to the Receive dialog. */
   | { kind: 'switch-to-receive'; token: string }
   /** The detected input was a mint URL — pivot to the Add Mint dialog. */
-  | { kind: 'switch-to-add-mint'; mintUrl: string };
+  | { kind: 'switch-to-add-mint'; mintUrl: string }
+  /** The LNURL resolved to a withdraw link — pivot to the Receive dialog. */
+  | { kind: 'switch-to-lnurl-withdraw'; lnurl: string };
 
 interface DetectConfirmCardProps {
   detected: DetectedInput;
@@ -767,12 +770,17 @@ const LnurlConfirm: React.FC<{
         setStep('amount');
       } catch (err) {
         if (cancelled) return;
+        // LNURL-withdraw is a receive operation — redirect to the Receive flow.
+        if (err instanceof LnurlWithdrawDetectedError) {
+          onDone({ kind: 'switch-to-lnurl-withdraw', lnurl: target });
+          return;
+        }
         setErrorMsg(err instanceof Error ? err.message : 'Failed to resolve address');
         setStep('error');
       }
     })();
     return () => { cancelled = true; };
-  }, [target, kind]);
+  }, [target, kind, onDone]);
 
   const balance = selectedMint ? (ctx.mintBalances.get(selectedMint.url) ?? 0) : 0;
   const minSats = payInfo ? msatToSats(payInfo.minSendable) : 1;
