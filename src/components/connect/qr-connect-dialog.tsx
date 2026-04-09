@@ -42,6 +42,8 @@ export const QRConnectDialog: React.FC<QRConnectDialogProps> = ({ onBack, onClos
   const [errorMessage, setErrorMessage] = useState('');
   const pinResolveRef = useRef<((pin: string) => void) | null>(null);
   const abortRef = useRef(false);
+  const onBackRef = useRef(onBack);
+  onBackRef.current = onBack;
 
   // Start the wallet connect flow
   const startConnect = useCallback(async () => {
@@ -91,7 +93,7 @@ export const QRConnectDialog: React.FC<QRConnectDialogProps> = ({ onBack, onClos
         // If the wallet explicitly denied, go back to the connect modal
         // instead of showing a scary error screen.
         if (msg.includes('denied by the wallet')) {
-          onBack();
+          onBackRef.current();
         } else {
           setErrorMessage(msg);
           setPhase('error');
