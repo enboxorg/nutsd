@@ -93,7 +93,7 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
     removeMint,
     deleteProofs,
     addTransaction,
-    clearTransactionToken,
+    markTransactionClaimed,
     getUnspentProofsForMint,
     getUnspentProofsByContext,
     markProofsPending,
@@ -360,10 +360,10 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
     const isSpent = await checkTokenSpent(tx.cashuToken, tx.mintUrl, tx.unit);
     // If confirmed spent, clear the bearer token from the DWN record
     if (isSpent === true) {
-      clearTransactionToken(tx.id);
+      markTransactionClaimed(tx.id);
     }
     return isSpent;
-  }, [clearTransactionToken]);
+  }, [markTransactionClaimed]);
 
   /** Route a QR scan or paste result to the appropriate dialog/flow. */
   const handleScanResult = useCallback((raw: string) => {
@@ -466,12 +466,12 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
         memo   : 'Reclaimed unclaimed token',
       });
 
-      clearTransactionToken(tx.id);
+      markTransactionClaimed(tx.id);
       toastSuccess('Token reclaimed', `+${totalReclaimed} ${tx.unit}`);
     } finally {
       releaseLock();
     }
-  }, [mints, storeNewProofsForMintUrl, recordTransaction, clearTransactionToken]);
+  }, [mints, storeNewProofsForMintUrl, recordTransaction, markTransactionClaimed]);
 
   const handleDisconnect = async () => {
     try {
@@ -734,6 +734,7 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
           onOldProofsSpent={removeProofsByIds}
           onMarkPending={markProofsPending}
           onTransactionCreated={recordTransaction}
+          onMarkClaimed={markTransactionClaimed}
         />
       )}
       {showSendToDid && hasMints && p2pkKey && did && (
@@ -749,6 +750,7 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
            onMarkPending={markProofsPending}
            onRevertPending={revertProofsToUnspent}
            onTransactionCreated={recordTransaction}
+           onMarkClaimed={markTransactionClaimed}
          />
       )}
       {showReceive && (

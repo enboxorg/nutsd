@@ -63,15 +63,24 @@ function TransactionRow({
   onReclaimToken?: (tx: Transaction) => Promise<void>;
 }) {
   const [copied, setCopied] = useState(false);
-  const [spentState, setSpentState] = useState<'unknown' | 'checking' | 'pending' | 'spent' | 'reclaimed'>('unknown');
   const [reclaiming, setReclaiming] = useState(false);
+  // Derive initial spent state from the persisted claim status on the transaction.
+  // Background sweep in use-wallet.ts updates tx.claimStatus to 'claimed' automatically.
+  const initialSpentState: 'unknown' | 'checking' | 'pending' | 'spent' | 'reclaimed' =
+    tx.claimStatus === 'claimed' ? 'spent'
+    : tx.claimStatus === 'pending' ? 'pending'
+    : 'unknown';
+  const [manualSpentState, setManualSpentState] = useState<'unknown' | 'checking' | 'pending' | 'spent' | 'reclaimed'>('unknown');
+  // Prefer the persisted claim status, fall back to whatever the user manually checked.
+  const spentState = manualSpentState !== 'unknown' ? manualSpentState : initialSpentState;
+  const setSpentState = setManualSpentState;
 
   const Icon = TX_ICONS[tx.type] ?? RefreshCwIcon;
   const label = TX_LABELS[tx.type] ?? tx.type;
   const color = TX_COLORS[tx.type] ?? 'text-muted-foreground';
   const isIncoming = ['mint', 'receive', 'p2p-receive'].includes(tx.type);
   const sign = isIncoming ? '+' : '-';
-  const hasCopyableToken = tx.type === 'send' && !!tx.cashuToken;
+  const hasCopyableToken = (tx.type === 'send' || tx.type === 'p2p-send') && !!tx.cashuToken;
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -128,8 +137,8 @@ function TransactionRow({
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
             <span className="text-sm font-medium">{label}</span>
-            {/* Spent status badge for sent tokens */}
-            {hasCopyableToken && spentState === 'spent' && (
+            {/* Claim status badge — uses persisted claimStatus or manual check */}
+            {(tx.type === 'send' || tx.type === 'p2p-send') && spentState === 'spent' && (
               <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-[var(--color-success)]/10 text-[var(--color-success)] text-[10px] font-medium">
                 <CircleCheckIcon className="h-2.5 w-2.5" />
                 claimed

@@ -102,6 +102,10 @@ export interface Transaction {
   unit: string;
   mintUrl: string;
   status: TransactionData['status'];
+  /** Claim status for 'send' and 'p2p-send'. Undefined for other types. */
+  claimStatus?: TransactionData['claimStatus'];
+  /** ISO timestamp when the token was confirmed claimed. */
+  claimedAt?: string;
   /** Encrypted cashu token for sends. Cleared once confirmed spent. */
   cashuToken?: string;
   recipientDid?: string;
@@ -1503,6 +1507,8 @@ export function useWallet() {
       unit             : data.unit,
       mintUrl          : data.mintUrl,
       status           : data.status,
+      claimStatus      : data.claimStatus,
+      claimedAt        : data.claimedAt,
       cashuToken       : data.cashuToken,
       recipientDid     : data.recipientDid,
       senderDid        : data.senderDid,
@@ -1514,23 +1520,34 @@ export function useWallet() {
   }, [repo]);
 
   /**
-   * Clear the cashuToken from a sent transaction after confirming it's spent.
-   * The token is no longer needed once the recipient has claimed it.
+   * Mark a sent transaction as claimed by the recipient.
+   * Clears the cashuToken (no longer needed) and sets claimStatus/claimedAt.
    */
-  const clearTransactionToken = useCallback(async (txId: string) => {
+  const markTransactionClaimed = useCallback(async (txId: string) => {
     if (!repo) return;
     try {
       const { records } = await repo.transaction.query();
       const record = records.find((r: { id: string }) => r.id === txId);
       if (record) {
         const data: TransactionData = await record.data.json();
-        await record.update({ data: { ...data, cashuToken: undefined } });
+        const claimedAt = new Date().toISOString();
+        await record.update({
+          data: {
+            ...data,
+            cashuToken  : undefined,
+            claimStatus : 'claimed',
+            claimedAt,
+          },
+        });
         setTransactions(prev =>
-          prev.map(t => t.id === txId ? { ...t, cashuToken: undefined } : t),
+          prev.map(t => t.id === txId
+            ? { ...t, cashuToken: undefined, claimStatus: 'claimed', claimedAt }
+            : t,
+          ),
         );
       }
     } catch (err) {
-      console.warn('Failed to clear transaction token:', err);
+      console.warn('Failed to mark transaction claimed:', err);
     }
   }, [repo]);
 
@@ -1545,27 +1562,28 @@ export function useWallet() {
     if (!repo || transactions.length === 0) return;
     let cancelled = false;
 
-    const sweep = async () => {
+    const sweep = async (): Promise<void> => {
       const { checkTokenSpent } = await import('@/cashu/wallet-ops');
       for (const tx of transactions) {
         if (cancelled) break;
         if (tx.type !== 'send' && tx.type !== 'p2p-send') continue;
+        if (tx.claimStatus === 'claimed') continue; // already confirmed
         if (!tx.cashuToken) continue;
         try {
           const isSpent = await checkTokenSpent(tx.cashuToken, tx.mintUrl, tx.unit);
           if (isSpent === true) {
-            await clearTransactionToken(tx.id);
+            await markTransactionClaimed(tx.id);
           }
         } catch { /* skip — mint may be offline */ }
       }
     };
 
-    const timer = setInterval(sweep, 5 * 60 * 1000); // 5 minutes
-    // Also run once after a delay (give initial load time to complete)
-    const initialTimer = setTimeout(sweep, 30_000);
+    const timer = setInterval(sweep, 60 * 1000); // 1 minute — faster feedback
+    // Also run once after a short delay (give initial load time to complete)
+    const initialTimer = setTimeout(sweep, 10_000);
 
     return () => { cancelled = true; clearInterval(timer); clearTimeout(initialTimer); };
-  }, [repo, transactions, clearTransactionToken]);
+  }, [repo, transactions, markTransactionClaimed]);
 
   // =========================================================================
   // Incoming P2P transfers
@@ -1758,7 +1776,7 @@ export function useWallet() {
 
     // Transaction operations
     addTransaction,
-    clearTransactionToken,
+    markTransactionClaimed,
     refreshTransactions,
 
     // Preferences

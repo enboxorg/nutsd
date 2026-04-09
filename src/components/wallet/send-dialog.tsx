@@ -1,11 +1,13 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef } from 'react';
 import { Loader2Icon, XIcon, SendIcon, CopyIcon, CheckIcon, CheckCircleIcon } from 'lucide-react';
 import { QRCodeDisplay } from '@/components/qr-code';
 import { toastError, toastSuccess, truncateMintUrl, formatAmount } from '@/lib/utils';
-import { swapProofs, estimateInputFee, checkTokenSpent } from '@/cashu/wallet-ops';
+import { swapProofs, estimateInputFee } from '@/cashu/wallet-ops';
 import { encodeToken } from '@/cashu/token-utils';
 import { acquireWalletLock } from '@/lib/wallet-mutex';
 import { DialogWrapper } from '@/components/ui/dialog-wrapper';
+import { useTokenClaimStatus } from '@/hooks/use-token-claim-status';
+import { ClaimStatusIndicator } from '@/components/wallet/claim-status-indicator';
 import type { Mint, StoredProof } from '@/hooks/use-wallet';
 import type { Proof } from '@cashu/cashu-ts';
 import type { TransactionData } from '@/protocol/cashu-wallet-protocol';
@@ -25,6 +27,8 @@ interface SendDialogProps {
   /** Mark proofs as pending in DWN before sending to mint. */
   onMarkPending: (ids: string[]) => Promise<void>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
+  /** Called when the background checker confirms the token was claimed. */
+  onMarkClaimed: (txId: string) => Promise<void>;
 }
 
 type Step = 'amount' | 'token';
@@ -40,6 +44,7 @@ export const SendDialog: React.FC<SendDialogProps> = ({
   onOldProofsSpent,
   onMarkPending,
   onTransactionCreated,
+  onMarkClaimed,
 }) => {
   const [selectedMint, setSelectedMint] = useState<Mint | null>(mints[0] ?? null);
   const [amount, setAmount] = useState('');
@@ -47,7 +52,21 @@ export const SendDialog: React.FC<SendDialogProps> = ({
   const [token, setToken] = useState('');
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [txId, setTxId] = useState<string | undefined>();
   const busyRef = useRef(false);
+
+  // --- Claim status tracking ---
+  const { status: claimStatus, checkNow } = useTokenClaimStatus({
+    token,
+    mintUrl : selectedMint?.url ?? '',
+    unit    : selectedMint?.unit ?? 'sat',
+    enabled : step === 'token' && !!token,
+    onClaimed: async () => {
+      if (txId) { await onMarkClaimed(txId); }
+    },
+  });
+
+  const claimed = claimStatus === 'claimed';
 
   const balance = selectedMint ? (mintBalances.get(selectedMint.url) ?? 0) : 0;
   const feePpk = selectedMint ? (mintFeePpk.get(selectedMint.url) ?? 0) : 0;
@@ -114,14 +133,16 @@ export const SendDialog: React.FC<SendDialogProps> = ({
 
       // Record transaction in DWN -- cashuToken is encrypted at the DWN layer
       // (encryptionRequired: true on the transaction type). Cleared once spent.
-      await onTransactionCreated({
-        type: 'send',
-        amount: amountNum,
-        unit: selectedMint.unit,
-        mintUrl: selectedMint.url,
-        status: 'completed',
-        cashuToken: encodedToken,
+      const createdTxId = await onTransactionCreated({
+        type        : 'send',
+        amount      : amountNum,
+        unit        : selectedMint.unit,
+        mintUrl     : selectedMint.url,
+        status      : 'completed',
+        claimStatus : 'pending',
+        cashuToken  : encodedToken,
       });
+      if (typeof createdTxId === 'string') { setTxId(createdTxId); }
 
       setStep('token');
     } catch (err) {
@@ -133,26 +154,6 @@ export const SendDialog: React.FC<SendDialogProps> = ({
       busyRef.current = false;
     }
   };
-
-  // --- Token claim status polling (NUT-07) ---
-  const [claimed, setClaimed] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval>>();
-
-  const checkClaimed = useCallback(async () => {
-    if (!token || !selectedMint || claimed) return;
-    const spent = await checkTokenSpent(token, selectedMint.url, selectedMint.unit);
-    if (spent === true) {
-      setClaimed(true);
-      if (pollRef.current) { clearInterval(pollRef.current); }
-    }
-  }, [token, selectedMint, claimed]);
-
-  useEffect(() => {
-    if (step !== 'token' || !token || claimed) return;
-    checkClaimed();
-    pollRef.current = setInterval(checkClaimed, 5_000);
-    return () => { if (pollRef.current) { clearInterval(pollRef.current); } };
-  }, [step, token, claimed, checkClaimed]);
 
   const handleCopy = async () => {
     try {
@@ -286,10 +287,10 @@ export const SendDialog: React.FC<SendDialogProps> = ({
                     {token}
                   </div>
                 </div>
-                <div className="flex items-center gap-1 justify-center text-[10px] text-muted-foreground">
-                  <Loader2Icon className="h-3 w-3 animate-spin" />
-                  Waiting for recipient to claim...
-                </div>
+
+                {/* Claim status indicator — adapts to mint capabilities and timing */}
+                <ClaimStatusIndicator status={claimStatus} onCheckNow={() => checkNow().catch(() => {})} />
+
                 <button
                   onClick={handleCopy}
                   className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-border text-sm font-medium hover:bg-muted transition-colors"

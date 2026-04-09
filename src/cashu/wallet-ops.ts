@@ -245,6 +245,43 @@ export async function checkTokenSpent(
   }
 }
 
+/**
+ * Check whether the mint supports NUT-07 (proof state check).
+ * Returns true if supported, false if not, null if info can't be fetched.
+ */
+export async function mintSupportsNut07(mintUrl: string, unit = 'sat'): Promise<boolean | null> {
+  try {
+    const info = await getMintInfo(mintUrl, unit);
+    const raw = info as any;
+    const nuts = raw?.contactInfo ?? raw?._data?.nuts ?? raw?.nuts;
+    return nuts?.['7']?.supported === true;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check whether the mint supports NUT-17 proof_state over WebSocket.
+ * Returns true when NUT-17 lists 'proof_state' under a bolt11+unit block.
+ */
+export async function mintSupportsNut17ProofState(
+  mintUrl: string, unit = 'sat',
+): Promise<boolean | null> {
+  try {
+    const info = await getMintInfo(mintUrl, unit);
+    const raw = info as any;
+    const nuts = raw?.contactInfo ?? raw?._data?.nuts ?? raw?.nuts;
+    const nut17 = nuts?.['17'];
+    const supported = nut17?.supported;
+    if (!Array.isArray(supported)) return false;
+    return supported.some((s: any) =>
+      s.method === 'bolt11' && s.unit === unit && Array.isArray(s.commands) && s.commands.includes('proof_state'),
+    );
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Mint info
 // ---------------------------------------------------------------------------
