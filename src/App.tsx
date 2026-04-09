@@ -405,16 +405,13 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
     return isSpent;
   }, [markTransactionClaimed]);
 
-  /** Delete a transaction (only allowed for expired pending invoices). */
+  /** Delete a transaction (only allowed for expired pending/failed invoices). */
   const handleDeleteTransaction = useCallback(async (tx: Transaction) => {
-    if (tx.status !== 'pending') return;
-    if (!tx.expiresAt || new Date(tx.expiresAt).getTime() >= Date.now()) return;
-    try {
-      await deleteTransaction(tx.id);
-      toastSuccess('Invoice removed');
-    } catch (err) {
-      toastError('Failed to remove invoice', err instanceof Error ? err : new Error('Delete failed'));
-    }
+    const isExpiredPending = tx.status === 'pending' && tx.expiresAt && new Date(tx.expiresAt).getTime() < Date.now();
+    const isFailedInvoice = tx.status === 'failed' && tx.type === 'mint' && !!tx.invoice;
+    if (!isExpiredPending && !isFailedInvoice) return;
+    await deleteTransaction(tx.id);
+    toastSuccess('Invoice removed');
   }, [deleteTransaction]);
 
   /** Show the QR code for a pending invoice. */
@@ -720,6 +717,10 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
           transactions={transactions}
           mints={mints}
           onClose={() => setShowHistory(false)}
+          onCheckTokenSpent={handleCheckTokenSpent}
+          onReclaimToken={handleReclaimToken}
+          onShowInvoiceQr={handleShowInvoiceQr}
+          onDeleteTransaction={handleDeleteTransaction}
         />
       )}
       {showSettings && (

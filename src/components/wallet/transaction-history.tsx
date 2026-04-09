@@ -1,36 +1,18 @@
 import { useState, useMemo } from 'react';
-import {
-  ArrowUpIcon, ArrowDownIcon, SendIcon, DownloadIcon,
-  RefreshCwIcon, UsersIcon, XIcon, SearchIcon, FilterIcon,
-  ClockIcon, AlertCircleIcon,
-} from 'lucide-react';
-import { formatAmount, formatDate, truncateMintUrl } from '@/lib/utils';
+import { XIcon, SearchIcon, FilterIcon } from 'lucide-react';
+import { truncateMintUrl } from '@/lib/utils';
+import { TransactionRow } from '@/components/wallet/transaction-list-card';
 import type { Transaction, Mint } from '@/hooks/use-wallet';
 
 interface TransactionHistoryProps {
   transactions: Transaction[];
   mints: Mint[];
   onClose: () => void;
+  onCheckTokenSpent?: (tx: Transaction) => Promise<boolean | null>;
+  onReclaimToken?: (tx: Transaction) => Promise<void>;
+  onShowInvoiceQr?: (tx: Transaction) => void;
+  onDeleteTransaction?: (tx: Transaction) => Promise<void>;
 }
-
-const TX_ICONS: Record<string, React.FC<{ className?: string }>> = {
-  'mint': ArrowDownIcon, 'melt': ArrowUpIcon, 'send': SendIcon,
-  'receive': DownloadIcon, 'swap': RefreshCwIcon,
-  'p2p-send': UsersIcon, 'p2p-receive': UsersIcon,
-};
-
-const TX_LABELS: Record<string, string> = {
-  'mint': 'Deposit', 'melt': 'Withdraw', 'send': 'Sent',
-  'receive': 'Received', 'swap': 'Swap',
-  'p2p-send': 'Sent to DID', 'p2p-receive': 'Received from DID',
-};
-
-const TX_COLORS: Record<string, string> = {
-  'mint': 'text-[var(--color-success)]', 'melt': 'text-[var(--color-warning)]',
-  'send': 'text-primary', 'receive': 'text-[var(--color-info)]',
-  'swap': 'text-muted-foreground',
-  'p2p-send': 'text-primary', 'p2p-receive': 'text-[var(--color-info)]',
-};
 
 const PAGE_SIZE = 25;
 
@@ -46,6 +28,10 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
   transactions,
   mints,
   onClose,
+  onCheckTokenSpent,
+  onReclaimToken,
+  onShowInvoiceQr,
+  onDeleteTransaction,
 }) => {
   const [typeFilter, setTypeFilter] = useState('all');
   const [mintFilter, setMintFilter] = useState('all');
@@ -144,53 +130,16 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
             <div className="p-6 text-center text-xs text-muted-foreground">
               No transactions match your filters.
             </div>
-          ) : pageItems.map(tx => {
-            const Icon = TX_ICONS[tx.type] ?? RefreshCwIcon;
-            const label = TX_LABELS[tx.type] ?? tx.type;
-            const color = TX_COLORS[tx.type] ?? 'text-muted-foreground';
-            const isIncoming = ['mint', 'receive', 'p2p-receive'].includes(tx.type);
-            const sign = isIncoming ? '+' : '-';
-            const isPending = tx.type === 'mint' && tx.status === 'pending' && !!tx.invoice;
-            const isExpired = isPending && !!tx.expiresAt && new Date(tx.expiresAt).getTime() < Date.now();
-
-            return (
-              <div key={tx.id} className="flex items-center justify-between px-4 py-3">
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className={`p-1.5 rounded-md bg-muted ${isPending && !isExpired ? 'text-[var(--color-warning)]' : isPending && isExpired ? 'text-muted-foreground' : color}`}>
-                    <Icon className="h-3.5 w-3.5" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-sm font-medium">{label}</span>
-                      {isPending && !isExpired && (
-                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-[var(--color-warning)]/10 text-[var(--color-warning)] text-[10px] font-medium">
-                          <ClockIcon className="h-2.5 w-2.5" />
-                          awaiting payment
-                        </span>
-                      )}
-                      {isPending && isExpired && (
-                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground text-[10px] font-medium">
-                          <AlertCircleIcon className="h-2.5 w-2.5" />
-                          expired
-                        </span>
-                      )}
-                    </div>
-                    {tx.memo && !isPending && <p className="text-xs text-muted-foreground truncate">{tx.memo}</p>}
-                    <div className="text-xs text-muted-foreground">
-                      {truncateMintUrl(tx.mintUrl)} &middot; {formatDate(tx.createdAt)}
-                    </div>
-                  </div>
-                </div>
-                <div className={`amount-display text-sm font-medium shrink-0 ml-3 ${
-                  isPending
-                    ? (isExpired ? 'text-muted-foreground' : 'text-[var(--color-warning)]')
-                    : (isIncoming ? 'text-[var(--color-success)]' : 'text-foreground')
-                }`}>
-                  {sign}{formatAmount(tx.amount, tx.unit)}
-                </div>
-              </div>
-            );
-          })}
+          ) : pageItems.map(tx => (
+            <TransactionRow
+              key={tx.id}
+              tx={tx}
+              onCheckSpent={onCheckTokenSpent}
+              onReclaimToken={onReclaimToken}
+              onShowInvoiceQr={onShowInvoiceQr}
+              onDeleteTransaction={onDeleteTransaction}
+            />
+          ))}
         </div>
 
         {/* Pagination */}

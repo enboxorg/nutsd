@@ -60,17 +60,23 @@ const TX_COLORS: Record<string, string> = {
   'p2p-receive': 'text-[var(--color-info)]',
 };
 
-/** Check whether a pending invoice is expired based on its expiresAt timestamp. */
-function isPendingInvoiceExpired(tx: Transaction): boolean {
-  return tx.status === 'pending' && !!tx.expiresAt && new Date(tx.expiresAt).getTime() < Date.now();
+/**
+ * Check whether a transaction represents a Lightning invoice that hasn't completed.
+ * Covers both pre-expiry (`status: 'pending'`) and post-restart expired
+ * invoices that startup recovery rewrites to `status: 'failed'`.
+ */
+function isUnfulfilledInvoice(tx: Transaction): boolean {
+  return tx.type === 'mint' && (tx.status === 'pending' || tx.status === 'failed') && !!tx.invoice;
 }
 
-/** Check whether a transaction is a pending invoice (pending mint with invoice). */
-function isPendingInvoice(tx: Transaction): boolean {
-  return tx.type === 'mint' && tx.status === 'pending' && !!tx.invoice;
+/** An unfulfilled invoice whose expiry has passed (or was marked failed by recovery). */
+function isExpiredInvoice(tx: Transaction): boolean {
+  if (!isUnfulfilledInvoice(tx)) return false;
+  if (tx.status === 'failed') return true; // recovery already confirmed expiry
+  return !!tx.expiresAt && new Date(tx.expiresAt).getTime() < Date.now();
 }
 
-function TransactionRow({
+export function TransactionRow({
   tx,
   onCheckSpent,
   onReclaimToken,
@@ -104,9 +110,9 @@ function TransactionRow({
   const sign = isIncoming ? '+' : '-';
   const hasCopyableToken = (tx.type === 'send' || tx.type === 'p2p-send') && !!tx.cashuToken;
 
-  // Pending invoice state
-  const pendingInvoice = isPendingInvoice(tx);
-  const expired = isPendingInvoiceExpired(tx);
+  // Unfulfilled invoice state (pending or failed-after-restart)
+  const unfulfilled = isUnfulfilledInvoice(tx);
+  const expired = isExpiredInvoice(tx);
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -175,20 +181,20 @@ function TransactionRow({
   return (
     <div className="flex items-center justify-between px-4 py-3 group">
       <div className="flex items-center gap-3 min-w-0">
-        <div className={`p-1.5 rounded-md bg-muted ${pendingInvoice && !expired ? 'text-[var(--color-warning)]' : pendingInvoice && expired ? 'text-muted-foreground' : color}`}>
+        <div className={`p-1.5 rounded-md bg-muted ${unfulfilled && !expired ? 'text-[var(--color-warning)]' : unfulfilled && expired ? 'text-muted-foreground' : color}`}>
           <Icon className="h-3.5 w-3.5" />
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
             <span className="text-sm font-medium">{label}</span>
             {/* Pending invoice badges */}
-            {pendingInvoice && !expired && (
+            {unfulfilled && !expired && (
               <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-[var(--color-warning)]/10 text-[var(--color-warning)] text-[10px] font-medium">
                 <ClockIcon className="h-2.5 w-2.5" />
                 awaiting payment
               </span>
             )}
-            {pendingInvoice && expired && (
+            {unfulfilled && expired && (
               <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground text-[10px] font-medium">
                 <AlertCircleIcon className="h-2.5 w-2.5" />
                 expired
@@ -222,7 +228,7 @@ function TransactionRow({
 
       <div className="flex items-center gap-1.5 shrink-0 ml-3">
         {/* Action buttons for pending invoices — always visible (touch-friendly) */}
-        {pendingInvoice && (
+        {unfulfilled && (
           <div className="flex items-center gap-0.5">
             {/* Show QR — only for active (non-expired) invoices */}
             {!expired && onShowInvoiceQr && (
@@ -291,7 +297,7 @@ function TransactionRow({
           </div>
         )}
         <div className={`amount-display text-sm font-medium ${
-          pendingInvoice
+          unfulfilled
             ? (expired ? 'text-muted-foreground' : 'text-[var(--color-warning)]')
             : (isIncoming ? 'text-[var(--color-success)]' : 'text-foreground')
         }`}>
@@ -318,7 +324,7 @@ export const TransactionListCard: React.FC<TransactionListCardProps> = ({
   useEffect(() => {
     const now = Date.now();
     const nextExpiry = recent.reduce<number | null>((earliest, tx) => {
-      if (tx.type !== 'mint' || tx.status !== 'pending' || !tx.invoice || !tx.expiresAt) return earliest;
+      if (!isUnfulfilledInvoice(tx) || !tx.expiresAt || tx.status === 'failed') return earliest;
       const exp = new Date(tx.expiresAt).getTime();
       if (exp <= now) return earliest; // already expired
       return earliest === null ? exp : Math.min(earliest, exp);
