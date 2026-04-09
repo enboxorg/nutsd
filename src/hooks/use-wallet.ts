@@ -230,7 +230,7 @@ export function useWallet() {
       if (!cancelled) { setRepo(r); }
     });
     return () => { cancelled = true; };
-  }, [enbox, isConnected, initializeProtocols, resetState]);
+  }, [enbox, isConnected, isDelegateSession, initializeProtocols, resetState]);
 
   // =========================================================================
   // Refresh functions
@@ -526,7 +526,7 @@ export function useWallet() {
     } catch (err) {
       console.error('[nutsd] P2PK key load failed:', err);
     }
-  }, [repo, publishP2pkPublicKey]);
+  }, [repo, connectedDid, publishP2pkPublicKey]);
 
   /**
    * Query the user's DWN for incoming transfer protocol records.
@@ -573,7 +573,7 @@ export function useWallet() {
     } catch (err) {
       console.warn('[nutsd] Failed to check incoming transfers:', err);
     }
-  }, []);
+  }, [connectedDid]);
 
   // --- Initial load ---
   useEffect(() => {
@@ -1356,7 +1356,7 @@ export function useWallet() {
         await addProof(mintContextId, proof);
       },
       ensureMint: async (mintUrl: string, unit: string) => {
-        let mint = mints.find(m => m.url === mintUrl);
+        const mint = mints.find(m => m.url === mintUrl);
         if (!mint) {
           try {
             const newMint = await addMint({ url: mintUrl, unit, active: true });
@@ -1470,7 +1470,7 @@ export function useWallet() {
     } catch (err) {
       console.error('[nutsd] Pending swap scan failed:', err);
     }
-  }, [repo, mints, safeStoreReceivedProofs]);
+  }, [repo, mints, addMint, safeStoreReceivedProofs]);
 
   // Wire startup recovery ref — called by the mints-dependent effect above
   // AFTER proofs are loaded. The loaded proofs are passed directly to avoid

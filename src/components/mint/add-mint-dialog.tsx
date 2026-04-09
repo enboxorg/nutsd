@@ -7,6 +7,8 @@ import type { MintData } from '@/protocol/cashu-wallet-protocol';
 interface AddMintDialogProps {
   onAdd: (data: MintData) => Promise<void>;
   onClose: () => void;
+  /** Pre-fill the URL input (e.g. when redirected from the Send scanner). */
+  initialUrl?: string;
 }
 
 function extractSupportedUnits(info: MintInfo): string[] {
@@ -26,8 +28,8 @@ function extractSupportedUnits(info: MintInfo): string[] {
   return ['sat'];
 }
 
-export const AddMintDialog: React.FC<AddMintDialogProps> = ({ onAdd, onClose }) => {
-  const [url, setUrl] = useState('');
+export const AddMintDialog: React.FC<AddMintDialogProps> = ({ onAdd, onClose, initialUrl }) => {
+  const [url, setUrl] = useState(initialUrl ?? '');
   const [loading, setLoading] = useState(false);
   const [units, setUnits] = useState<string[]>([]);
   const [selectedUnit, setSelectedUnit] = useState<string>('');

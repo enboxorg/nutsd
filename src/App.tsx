@@ -8,37 +8,26 @@ import { useWallet } from '@/hooks/use-wallet';
 
 import { Welcome } from '@/components/wallet/welcome';
 import { BalanceCard } from '@/components/wallet/balance-card';
-import { ActionButtons } from '@/components/wallet/action-buttons';
+import { PrimaryActions } from '@/components/wallet/primary-actions';
 import { MintListCard } from '@/components/wallet/mint-list-card';
 import { TransactionListCard } from '@/components/wallet/transaction-list-card';
 import { AddMintDialog } from '@/components/mint/add-mint-dialog';
 import { MintDetail } from '@/components/mint/mint-detail';
-import { DepositDialog } from '@/components/wallet/deposit-dialog';
-import { WithdrawDialog } from '@/components/wallet/withdraw-dialog';
-import { SendDialog } from '@/components/wallet/send-dialog';
-import { SendToDIDDialog } from '@/components/wallet/send-to-did-dialog';
-import { ReceiveDialog } from '@/components/wallet/receive-dialog';
+import { UnifiedSendDialog } from '@/components/wallet/unified-send-dialog';
+import { UnifiedReceiveDialog } from '@/components/wallet/unified-receive-dialog';
 import { TrustMintDialog } from '@/components/wallet/trust-mint-dialog';
 import type { CrossMintSwapEstimate } from '@/cashu/cross-mint-swap';
 import { RecoveryPhraseDialog } from '@/components/connect/recovery-phrase-dialog';
-import { LnurlWithdrawDialog } from '@/components/wallet/lnurl-withdraw-dialog';
-import { PayRequestDialog } from '@/components/wallet/pay-request-dialog';
-import { CreateRequestDialog } from '@/components/wallet/create-request-dialog';
 import { OnboardingBanner } from '@/components/wallet/onboarding-banner';
 import { TransactionHistory } from '@/components/wallet/transaction-history';
 import { SettingsPage } from '@/components/wallet/settings-page';
 import { Toaster } from 'sonner';
 
-import { QrScanner } from '@/components/wallet/qr-scanner';
-import { PasteActionBar } from '@/components/wallet/paste-action-bar';
-import { detectInput } from '@/lib/input-detect';
-import { receiveToken, getMintInfo } from '@/cashu/wallet-ops';
-import { extractMintUrl } from '@/cashu/token-utils';
+import { receiveToken, getMintInfo, checkTokenSpent } from '@/cashu/wallet-ops';
+import { executeCrossMintSwap } from '@/cashu/cross-mint-swap';
 import { acquireWalletLock } from '@/lib/wallet-mutex';
 
-import { toastError, toastSuccess, formatAmount, truncateMintUrl } from '@/lib/utils';
-import { truncateMiddle } from '@/lib/utils';
-import { checkTokenSpent } from '@/cashu/wallet-ops';
+import { toastError, toastSuccess, formatAmount, truncateMintUrl, truncateMiddle } from '@/lib/utils';
 import { brand } from '@/lib/brand';
 import { usePinLock } from '@/hooks/use-pin-lock';
 import { PinScreen } from '@/components/connect/pin-screen';
@@ -51,9 +40,6 @@ import {
   MoonIcon,
   SunIcon,
   AlertTriangleIcon,
-  KeyIcon,
-  CopyIcon,
-  UsersIcon,
   DownloadIcon,
   SettingsIcon,
 } from 'lucide-react';
@@ -114,20 +100,17 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
     return [mints[idx], ...mints.slice(0, idx), ...mints.slice(idx + 1)];
   }, [mints, preferences.defaultMintUrl]);
 
-  // Dialog state
+  // Dialog state — unified send/receive model.
   const [showAddMint, setShowAddMint] = useState(false);
-  const [showDeposit, setShowDeposit] = useState(false);
-  const [showWithdraw, setShowWithdraw] = useState(false);
+  /** Pre-filled URL for AddMintDialog (set when Send scanner detects a mint URL). */
+  const [addMintInitialUrl, setAddMintInitialUrl] = useState<string | null>(null);
   const [showSend, setShowSend] = useState(false);
   const [showReceive, setShowReceive] = useState(false);
+  /** When set, the Receive dialog opens in claim-token mode instead of channels. */
+  const [receiveClaimToken, setReceiveClaimToken] = useState<string | null>(null);
   const [selectedMint, setSelectedMint] = useState<Mint | null>(null);
-  const [showScanner, setShowScanner] = useState(false);
-  const [showLnurlPay, setShowLnurlPay] = useState<{ target: string; type: 'lightning-address' | 'lnurl' } | null>(null);
   const [showHistory, setShowHistory] = useState(false);
-  const [showSendToDid, setShowSendToDid] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [showPayRequest, setShowPayRequest] = useState<string | null>(null);
-  const [showCreateRequest, setShowCreateRequest] = useState(false);
   const [trustBusy, setTrustBusy] = useState(false);
   const [trustMintState, setTrustMintState] = useState<{
     mintUrl: string;
@@ -286,11 +269,9 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
       // We do NOT add the foreign mint to the DWN — that's the whole point of
       // the trust dialog. The cashu-ts Wallet is created directly via getWallet()
       // which only needs the mint URL, not a DWN record.
-      const { receiveToken: receiveTokenOp } = await import('@/cashu/wallet-ops');
-      const foreignProofs = await receiveTokenOp(trustMintState.mintUrl, trustMintState.token, trustMintState.unit);
+      const foreignProofs = await receiveToken(trustMintState.mintUrl, trustMintState.token, trustMintState.unit);
 
       // Execute cross-mint swap
-      const { executeCrossMintSwap } = await import('@/cashu/cross-mint-swap');
       let result;
       try {
         result = await executeCrossMintSwap(
@@ -365,77 +346,21 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
     return isSpent;
   }, [markTransactionClaimed]);
 
-  /** Route a QR scan or paste result to the appropriate dialog/flow. */
-  const handleScanResult = useCallback((raw: string) => {
-    const detected = detectInput(raw);
-    switch (detected.type) {
-      case 'cashu-token':
-        // Process the scanned token with mint-safe ordering
-        (async () => {
-          const releaseLock = await acquireWalletLock('scan-receive').catch(() => null);
-          if (!releaseLock) {
-            toastError('Wallet busy', new Error('Another operation is in progress.'));
-            return;
-          }
-          try {
-            const mintUrl = extractMintUrl(detected.value);
-            if (!mintUrl) throw new Error('Could not determine mint URL from token');
+  // ── Unified dialog switchers ──
 
-            // Check if the mint is known. If not, show the trust dialog.
-            const knownMint = mints.find(m => m.url === mintUrl);
-            if (!knownMint) {
-              const { parseToken } = await import('@/cashu/token-utils');
-              try {
-                const parsed = parseToken(detected.value);
-                handleUnknownMint(mintUrl, parsed.amount, parsed.unit ?? 'sat', detected.value);
-              } catch {
-                // Expected: V4 token or unparseable — show with unknown amount in trust dialog
-                handleUnknownMint(mintUrl, 0, 'sat', detected.value);
-              }
-              return; // Trust dialog handles the rest
-            }
+  /** The Send dialog detected a cashu token → hand off to Receive in claim mode. */
+  const handleSwitchToReceive = useCallback((token: string) => {
+    setShowSend(false);
+    setReceiveClaimToken(token);
+    setShowReceive(true);
+  }, []);
 
-            const newProofs = await receiveToken(mintUrl, detected.value);
-            const totalReceived = newProofs.reduce((s, p) => s + p.amount, 0);
-            const contextId = knownMint.contextId;
-            await storeNewProofsForMintUrl(contextId, newProofs, mintUrl);
-            await recordTransaction({
-              type   : 'receive',
-              amount : totalReceived,
-              unit   : knownMint.unit ?? 'sat',
-              mintUrl,
-              status : 'completed',
-            });
-            toastSuccess('Token received', `+${totalReceived} ${knownMint.unit ?? 'sat'}`);
-          } catch (err) {
-            toastError('Failed to receive token', err);
-          } finally {
-            releaseLock();
-          }
-        })();
-        break;
-      case 'lightning-invoice':
-        setShowWithdraw(true);
-        break;
-      case 'lnurl':
-        setShowLnurlPay({ target: detected.value, type: 'lnurl' });
-        break;
-      case 'lightning-address':
-        setShowLnurlPay({ target: detected.value, type: 'lightning-address' });
-        break;
-      case 'mint-url':
-        setShowAddMint(true);
-        break;
-      case 'payment-request':
-        setShowPayRequest(detected.value);
-        break;
-      default:
-        toastError('Unrecognized QR code', new Error(
-          'Expected a Cashu token, Lightning invoice, or mint URL.',
-        ));
-        break;
-    }
-  }, [mints, handleUnknownMint, storeNewProofsForMintUrl, recordTransaction]);
+  /** The Send dialog detected a mint URL → hand off to Add Mint with the URL pre-filled. */
+  const handleSwitchToAddMint = useCallback((mintUrl: string) => {
+    setShowSend(false);
+    setAddMintInitialUrl(mintUrl);
+    setShowAddMint(true);
+  }, []);
 
   /** Reclaim an unclaimed sent token (NUT-07 reports all proofs UNSPENT). */
   const handleReclaimToken = useCallback(async (tx: Transaction) => {
@@ -610,27 +535,6 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
               </div>
             )}
 
-            {/* P2PK public key display */}
-            {p2pkKey && (
-              <div className="flex items-center gap-2 p-3 rounded-lg bg-card border border-border text-xs">
-                <KeyIcon className="h-3.5 w-3.5 text-primary shrink-0" />
-                <div className="min-w-0">
-                  <span className="text-muted-foreground">Your P2PK key: </span>
-                  <code className="font-mono text-foreground truncate">{p2pkKey.publicKey.slice(0, 8)}...{p2pkKey.publicKey.slice(-6)}</code>
-                </div>
-                <button
-                  onClick={async () => {
-                    await navigator.clipboard.writeText(p2pkKey.publicKey);
-                    toastSuccess('P2PK key copied');
-                  }}
-                  className="p-1 rounded hover:bg-muted text-muted-foreground shrink-0"
-                  title="Copy P2PK public key"
-                >
-                  <CopyIcon className="h-3 w-3" />
-                </button>
-              </div>
-            )}
-
             {/* unit is the actual denomination of the proofs, NOT a display preference.
                 displayCurrency requires an exchange rate layer to convert — without it,
                 showing sat balances as "$1,000.00" would be actively misleading.
@@ -645,34 +549,10 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
             {!hasMints ? (
               <OnboardingBanner onAddMint={() => setShowAddMint(true)} />
             ) : (
-              <>
-                <ActionButtons
-                  onDeposit={() => setShowDeposit(true)}
-                  onWithdraw={() => setShowWithdraw(true)}
-                  onSend={() => setShowSend(true)}
-                  onReceive={() => setShowReceive(true)}
-                  onRequest={() => setShowCreateRequest(true)}
-                />
-
-                <PasteActionBar
-                  onCashuToken={(token) => handleScanResult(token)}
-                  onLightningInvoice={() => setShowWithdraw(true)}
-                  onMintUrl={() => setShowAddMint(true)}
-                  onLnurlOrAddress={(value, type) => setShowLnurlPay({ target: value, type })}
-                  onPaymentRequest={(v) => setShowPayRequest(v)}
-                  onScanQr={() => setShowScanner(true)}
-                />
-
-                {p2pkKey && (
-                  <button
-                    onClick={() => setShowSendToDid(true)}
-                    className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-primary/30 text-xs font-medium text-primary hover:bg-primary/5 transition-colors"
-                  >
-                    <UsersIcon className="h-3.5 w-3.5" />
-                    Send to DID (P2PK)
-                  </button>
-                )}
-              </>
+              <PrimaryActions
+                onSend={() => setShowSend(true)}
+                onReceive={() => { setReceiveClaimToken(null); setShowReceive(true); }}
+              />
             )}
 
             <MintListCard
@@ -697,93 +577,50 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
       {showAddMint && (
         <AddMintDialog
           onAdd={handleAddMint}
-          onClose={() => setShowAddMint(false)}
+          onClose={() => { setShowAddMint(false); setAddMintInitialUrl(null); }}
+          initialUrl={addMintInitialUrl ?? undefined}
         />
       )}
-      {showDeposit && hasMints && (
-        <DepositDialog
-          mints={orderedMints}
-          onClose={() => setShowDeposit(false)}
-          onProofsReceived={storeNewProofs}
-          onTransactionCreated={recordTransaction}
-        />
-      )}
-      {showWithdraw && hasMints && (
-        <WithdrawDialog
-          mints={orderedMints}
-          mintBalances={mintBalances}
-          getUnspentProofs={getUnspentProofsForMint}
-          keysetFeeMap={keysetFeeMap}
-          onClose={() => setShowWithdraw(false)}
-          onNewProofs={storeNewProofs}
-          onOldProofsSpent={removeProofsByIds}
-          onMarkPending={markProofsPending}
-          onRevertToUnspent={revertProofsToUnspent}
-          onTransactionCreated={recordTransaction}
-        />
-      )}
+
       {showSend && hasMints && (
-        <SendDialog
+        <UnifiedSendDialog
           mints={orderedMints}
           mintBalances={mintBalances}
-          getUnspentProofs={getUnspentProofsForMint}
-          keysetFeeMap={keysetFeeMap}
+          mintBalancesByContext={mintBalancesByContext}
           mintFeePpk={mintFeePpk}
+          keysetFeeMap={keysetFeeMap}
+          getUnspentProofs={getUnspentProofsForMint}
+          getUnspentProofsByContext={getUnspentProofsByContext}
+          senderDid={did}
+          enbox={enbox}
           onClose={() => setShowSend(false)}
           onNewProofs={storeNewProofs}
           onOldProofsSpent={removeProofsByIds}
           onMarkPending={markProofsPending}
+          onRevertPending={revertProofsToUnspent}
           onTransactionCreated={recordTransaction}
           onMarkClaimed={markTransactionClaimed}
+          onSwitchToReceive={handleSwitchToReceive}
+          onSwitchToAddMint={handleSwitchToAddMint}
         />
       )}
-      {showSendToDid && hasMints && p2pkKey && did && (
-         <SendToDIDDialog
-           mints={orderedMints}
-           mintBalances={mintBalances}
-           getUnspentProofs={getUnspentProofsForMint}
-           senderDid={did}
-           enbox={enbox}
-           onClose={() => setShowSendToDid(false)}
-           onNewProofs={storeNewProofs}
-           onOldProofsSpent={removeProofsByIds}
-           onMarkPending={markProofsPending}
-           onRevertPending={revertProofsToUnspent}
-           onTransactionCreated={recordTransaction}
-           onMarkClaimed={markTransactionClaimed}
-         />
-      )}
+
       {showReceive && (
-        <ReceiveDialog
+        <UnifiedReceiveDialog
           mints={mints}
+          did={did ?? undefined}
           p2pkPrivateKey={p2pkKey?.privateKey}
+          claimToken={receiveClaimToken ?? undefined}
           onUnknownMint={handleUnknownMint}
-          onClose={() => setShowReceive(false)}
+          onClose={() => {
+            setShowReceive(false);
+            setReceiveClaimToken(null);
+          }}
           onProofsReceived={storeNewProofsForMintUrl}
           onTransactionCreated={recordTransaction}
         />
       )}
-      {showScanner && (
-        <QrScanner
-          onScan={(value) => { setShowScanner(false); handleScanResult(value); }}
-          onClose={() => setShowScanner(false)}
-        />
-      )}
-      {showLnurlPay && hasMints && (
-        <LnurlWithdrawDialog
-          target={showLnurlPay.target}
-          targetType={showLnurlPay.type}
-          mints={orderedMints}
-          mintBalances={mintBalances}
-          getUnspentProofs={getUnspentProofsForMint}
-          keysetFeeMap={keysetFeeMap}
-          onClose={() => setShowLnurlPay(null)}
-          onNewProofs={storeNewProofs}
-          onOldProofsSpent={removeProofsByIds}
-          onMarkPending={markProofsPending}
-          onTransactionCreated={recordTransaction}
-        />
-      )}
+
       {showHistory && (
         <TransactionHistory
           transactions={transactions}
@@ -817,22 +654,6 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
           onSwapToMint={handleSwapToMint}
           onCancel={() => { if (!trustBusy) setTrustMintState(null); }}
         />
-      )}
-      {showPayRequest && (
-        <PayRequestDialog
-          encodedRequest={showPayRequest}
-          mints={orderedMints}
-          mintBalancesByContext={mintBalancesByContext}
-          getUnspentProofsByContext={getUnspentProofsByContext}
-          onClose={() => setShowPayRequest(null)}
-          onNewProofs={storeNewProofs}
-          onOldProofsSpent={removeProofsByIds}
-          onMarkPending={markProofsPending}
-          onTransactionCreated={recordTransaction}
-        />
-      )}
-      {showCreateRequest && hasMints && (
-        <CreateRequestDialog mints={orderedMints} onClose={() => setShowCreateRequest(false)} />
       )}
     </div>
   );

@@ -5,9 +5,20 @@
  * the recipient's DID, locks the token to their P2PK public key (NUT-11),
  * and writes the locked token to the recipient's DWN.
  *
- * SECURITY: Every transfer record MUST contain a P2PK-locked token.
- * `assertP2PKLocked()` validates this before any write. Without P2PK,
- * a DWN operator could front-run the recipient and steal bearer tokens.
+ * SECURITY (economic):
+ *   Every transfer record MUST contain a P2PK-locked token.
+ *   `assertP2PKLocked()` validates this before any write. Without P2PK,
+ *   a DWN operator could front-run the recipient and steal bearer tokens.
+ *
+ * SECURITY (privacy):
+ *   The `transfer` type has `encryptionRequired: true` so the record data
+ *   (amount, mint URL, memo, sender DID) is encrypted at the DWN layer
+ *   using protocol-path-derived keys from the recipient's X25519 key
+ *   agreement key. A DWN server operator can observe that record X was
+ *   written to user Y, but NOT the financial metadata inside it.
+ *
+ *   The only exception is `publicKey`, which is intentionally
+ *   world-readable so senders can resolve the recipient's P2PK key.
  *
  * Flow:
  * 1. Sender resolves recipient DID → gets their P2PK public key
@@ -29,7 +40,15 @@ import { isP2pkLockedProof, isP2pkLockedToken } from '@/cashu/token-utils';
 // Data types
 // ---------------------------------------------------------------------------
 
-/** Incoming ecash transfer from another DID. */
+/**
+ * Incoming ecash transfer from another DID.
+ *
+ * This is the exact shape serialized to the DWN record. Do NOT add transient
+ * fields like raw proofs here — anything in this type will be written to the
+ * DWN (encrypted, but still persisted). If a caller needs to validate raw
+ * proofs without re-decoding the token, pass them as a second argument to
+ * `assertP2PKLocked`.
+ */
 export type TransferData = {
   /** Serialized Cashu token string (MUST be NUT-11 P2PK locked). */
   token: string;
@@ -45,13 +64,6 @@ export type TransferData = {
   senderDid: string;
   /** Recipient's P2PK public key the token is locked to. */
   recipientPubkey: string;
-  /**
-   * Raw proofs for pre-encode P2PK validation. When provided,
-   * assertP2PKLocked validates these directly instead of decoding the
-   * token string (which can fail with V4 short keyset IDs).
-   * This field is NOT serialized to the DWN record.
-   */
-  proofs?: Proof[];
 };
 
 /** Published P2PK public key — world-readable so senders can lock tokens. */
@@ -60,24 +72,6 @@ export type P2pkPublicKeyData = {
   publicKey: string;
   /** ISO timestamp when the key was published. */
   publishedAt: string;
-};
-
-/** Payment request (shared with potential senders). */
-export type PaymentRequestData = {
-  /** Requested amount. */
-  amount: number;
-  /** Currency unit. */
-  unit: string;
-  /** Accepted mint URLs. */
-  mints: string[];
-  /** Optional memo/description. */
-  memo?: string;
-  /** Recipient DID (owner of this request). */
-  recipientDid: string;
-  /** Recipient's P2PK public key for locking. */
-  recipientPubkey: string;
-  /** Whether this request has been fulfilled. */
-  fulfilled?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -89,12 +83,13 @@ export const CashuTransferDefinition = {
   published : true,
   types     : {
     transfer: {
-      schema      : 'https://enbox.id/schemas/cashu-transfer/transfer',
-      dataFormats : ['application/json'],
-    },
-    request: {
-      schema      : 'https://enbox.id/schemas/cashu-transfer/request',
-      dataFormats : ['application/json'],
+      schema             : 'https://enbox.id/schemas/cashu-transfer/transfer',
+      dataFormats        : ['application/json'],
+      // Encrypt the transfer record so the DWN operator cannot read the
+      // financial metadata (amount, mint URL, memo, sender DID). The token
+      // itself is also P2PK-locked, so economic theft is blocked at two
+      // layers: encryption (privacy) and P2PK (economic).
+      encryptionRequired : true,
     },
     publicKey: {
       schema      : 'https://enbox.id/schemas/cashu-transfer/public-key',
@@ -116,7 +111,6 @@ export const CashuTransferDefinition = {
         { who: 'anyone', can: ['create'] },
       ],
     },
-    request: {},
     publicKey: {
       $actions: [
         { who: 'anyone', can: ['read'] },
@@ -139,11 +133,17 @@ export const CashuTransferDefinition = {
  *    NUT-10/11 P2PK spending conditions in its proof secrets. This prevents
  *    a sender from claiming P2PK protection while including unlocked proofs.
  *
+ * @param data      The transfer data to validate (exactly as it will be written).
+ * @param rawProofs Optional raw Proof[] for direct validation. Preferred over
+ *                  re-decoding `data.token` because V4 CBOR tokens with short
+ *                  keyset IDs cannot always be decoded without keyset metadata.
+ *                  These are NOT written to the DWN — they're only used here.
+ *
  * This MUST be called before writing any transfer record to the DWN.
  *
  * @throws if any validation fails
  */
-export function assertP2PKLocked(data: TransferData): void {
+export function assertP2PKLocked(data: TransferData, rawProofs?: Proof[]): void {
   if (!data.token || !data.token.trim()) {
     throw new Error('Transfer token is empty. P2P transfers require a locked Cashu token.');
   }
@@ -166,11 +166,11 @@ export function assertP2PKLocked(data: TransferData): void {
   // Without this check, a sender could pass metadata validation while
   // including an unlocked token — which a DWN operator could steal.
   //
-  // If raw proofs are provided, validate them directly (avoids the V4
+  // If raw proofs were passed in, validate them directly (avoids the V4
   // token decode round-trip which fails on short keyset IDs when the
   // mint's keysets aren't available to the decoder).
-  const proofsLocked = data.proofs
-    ? data.proofs.every(isP2pkLockedProof)
+  const proofsLocked = rawProofs
+    ? rawProofs.every(isP2pkLockedProof)
     : isP2pkLockedToken(data.token);
 
   if (!proofsLocked) {
@@ -188,7 +188,6 @@ export function assertP2PKLocked(data: TransferData): void {
 
 export type CashuTransferSchemaMap = {
   transfer: TransferData;
-  request: PaymentRequestData;
   publicKey: P2pkPublicKeyData;
 };
 

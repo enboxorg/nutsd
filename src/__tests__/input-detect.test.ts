@@ -100,6 +100,44 @@ describe('detectInput', () => {
     expect(result.value).toBe('https://testnut.cashu.space');
   });
 
+  // --- DIDs ---
+  it('detects did:dht identifier', () => {
+    const result = detectInput('did:dht:1wiaaaoagbejjznwn5s1ukjntjzgt69ucn8aozdtbr78yhnwdpty');
+    expect(result.type).toBe('did');
+    expect(result.value).toBe('did:dht:1wiaaaoagbejjznwn5s1ukjntjzgt69ucn8aozdtbr78yhnwdpty');
+  });
+
+  it('detects did:web identifier', () => {
+    const result = detectInput('did:web:example.com');
+    expect(result.type).toBe('did');
+  });
+
+  it('detects did:key identifier', () => {
+    const result = detectInput('did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH');
+    expect(result.type).toBe('did');
+  });
+
+  it('trims whitespace on DID', () => {
+    const result = detectInput('  did:dht:abc123  ');
+    expect(result.type).toBe('did');
+    expect(result.value).toBe('did:dht:abc123');
+  });
+
+  it('rejects malformed DID without method', () => {
+    const result = detectInput('did::abc');
+    expect(result.type).toBe('unknown');
+  });
+
+  it('rejects DID with whitespace in identifier', () => {
+    const result = detectInput('did:dht:abc 123');
+    expect(result.type).toBe('unknown');
+  });
+
+  it('rejects bare "did:" with no method or id', () => {
+    const result = detectInput('did:');
+    expect(result.type).toBe('unknown');
+  });
+
   // --- Unknown ---
   it('returns unknown for empty string', () => {
     expect(detectInput('').type).toBe('unknown');
@@ -121,5 +159,10 @@ describe('detectInput', () => {
 
   it('lightning invoice takes priority over URL', () => {
     expect(detectInput('lnbc100https://test').type).toBe('lightning-invoice');
+  });
+
+  it('DID takes priority over mint URL even with dots', () => {
+    // did:web:example.com could look like a mint URL; DID must win
+    expect(detectInput('did:web:example.com').type).toBe('did');
   });
 });
