@@ -90,6 +90,12 @@ export interface UnifiedSendDialogProps {
    * dialog and opens Add Mint.
    */
   onSwitchToAddMint: (mintUrl: string) => void;
+
+  /**
+   * Called when an LNURL resolves to a withdraw link. The parent closes this
+   * dialog and opens the Receive flow in LNURL-withdraw mode.
+   */
+  onSwitchToLnurlWithdraw: (lnurl: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +134,7 @@ export const UnifiedSendDialog: React.FC<UnifiedSendDialogProps> = (props) => {
     onMarkClaimed,
     onSwitchToReceive,
     onSwitchToAddMint,
+    onSwitchToLnurlWithdraw,
   } = props;
 
   const [step, setStep] = useState<Step>('chooser');
@@ -231,6 +238,10 @@ export const UnifiedSendDialog: React.FC<UnifiedSendDialogProps> = (props) => {
       onSwitchToAddMint(outcome.mintUrl);
       return;
     }
+    if (outcome.kind === 'switch-to-lnurl-withdraw') {
+      onSwitchToLnurlWithdraw(outcome.lnurl);
+      return;
+    }
     if (outcome.kind === 'token-ready') {
       // NUT-18 payment-request fulfilment: we minted a token that needs to be
       // manually shared with the requester. Reuse the offline-token success UI
@@ -246,7 +257,7 @@ export const UnifiedSendDialog: React.FC<UnifiedSendDialogProps> = (props) => {
     // kind === 'sent'
     setSuccessAmount({ amount: outcome.amount, unit: outcome.unit, memo: outcome.memo });
     setStep('sent');
-  }, [onSwitchToReceive, onSwitchToAddMint, mints]);
+  }, [onSwitchToReceive, onSwitchToAddMint, onSwitchToLnurlWithdraw, mints]);
 
   // ── Offline token creation ──
   const handleCreateToken = async () => {

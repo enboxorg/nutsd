@@ -50,6 +50,7 @@ import {
 import { generateP2pkKeyPair, receiveP2pkLocked, type P2pkKeyPair } from '@/cashu/p2pk';
 import { recoverStashes, type RecoveryDeps } from '@/cashu/proof-stash-recovery';
 import { resumePendingSwap, type PendingSwapState } from '@/cashu/cross-mint-swap';
+import { resumePendingMint, parsePendingMintState } from '@/cashu/pending-mint-recovery';
 import { acquireWalletLock } from '@/lib/wallet-mutex';
 
 // ---------------------------------------------------------------------------
@@ -1472,6 +1473,113 @@ export function useWallet() {
     }
   }, [repo, mints, addMint, safeStoreReceivedProofs]);
 
+  /**
+   * Resume any pending mint-quote receives (Lightning receive, LNURL-withdraw).
+   * Scans transactions for status='pending' + type='mint' with PendingMintState in memo.
+   */
+  const resumePendingReceives = useCallback(async (): Promise<boolean> => {
+    if (!repo) return false;
+    let recovered = false;
+    try {
+      const { records } = await repo.transaction.query();
+      if (!records) return false;
+
+      for (const record of records) {
+        try {
+          const tx: TransactionData = await record.data.json();
+          if (tx.status !== 'pending' || tx.type !== 'mint' || !tx.memo) continue;
+
+          const state = parsePendingMintState(tx.memo);
+          if (!state) continue;
+
+          console.log(`[nutsd] Resuming pending ${state.source} receive: quote ${state.quoteId}`);
+          const result = await resumePendingMint(state);
+
+          switch (result.status) {
+            case 'minted': {
+              // Ensure mint exists
+              let mint = mints.find(m => m.contextId === state.mintContextId);
+              if (!mint) {
+                try {
+                  const added = await addMint({ url: state.mintUrl, unit: state.unit, active: true });
+                  if (added) mint = added;
+                } catch {
+                  console.warn(`[nutsd] Receive resume: mint ${state.mintUrl} unreachable, preserving pending`);
+                  continue;
+                }
+              }
+              if (!mint) {
+                console.warn(`[nutsd] Receive resume: cannot resolve mint, preserving pending`);
+                continue;
+              }
+
+              const fullyPersisted = await safeStoreReceivedProofs(
+                mint.contextId, mint.url, mint.unit,
+                result.proofs.map(p => ({
+                  amount: p.amount, id: p.id, secret: p.secret, C: p.C, state: 'unspent' as const,
+                })),
+              );
+
+              if (fullyPersisted) {
+                const total = result.proofs.reduce((s, p) => s + p.amount, 0);
+                await record.update({
+                  data: { ...tx, status: 'completed', amount: total, memo: `Recovered ${state.source} receive` },
+                });
+                console.log(`[nutsd] Pending ${state.source} receive completed: ${total} ${state.unit}`);
+                recovered = true;
+              }
+              break;
+            }
+            case 'issued':
+              // ISSUED = tokens were already minted by a previous attempt.
+              //
+              // IMPORTANT: This does NOT guarantee the proofs are in the
+              // local wallet. There is a pre-stash crash window where
+              // mintTokens() succeeded but the app crashed before the WAL
+              // stash write. In that case proofs are unrecoverable — the
+              // mint won't re-issue, and no stash exists to recover from.
+              //
+              // The stash recovery step ran earlier in the startup sequence.
+              // If a stash exists, those proofs are already recovered. If
+              // no stash exists, the proofs fell into the ~ms pre-stash
+              // window and are lost. Keeping this pending would just hit
+              // ISSUED forever with no recovery path — marking completed
+              // (with a warning) is the honest outcome.
+              await record.update({
+                data: {
+                  ...tx,
+                  status: 'completed',
+                  memo: 'Recovered (ISSUED — proofs may have been recovered via stash, or lost in pre-stash crash window)',
+                },
+              });
+              console.warn(
+                `[nutsd:financial] Pending receive ISSUED: ${state.quoteId} — ` +
+                'proofs should have been recovered by stash recovery; if not, ' +
+                'they fell into the pre-stash crash window and are unrecoverable.',
+              );
+              recovered = true;
+              break;
+            case 'expired':
+              await record.update({ data: { ...tx, status: 'failed', memo: 'Quote expired before payment' } });
+              console.log(`[nutsd] Pending receive expired: ${state.quoteId}`);
+              break;
+            case 'pending':
+              // Still waiting — leave for next startup
+              break;
+            case 'error':
+              console.warn(`[nutsd] Pending receive check failed (will retry): ${result.message}`);
+              break;
+          }
+        } catch (err) {
+          console.warn('[nutsd] Pending receive resume failed (will retry):', err);
+        }
+      }
+    } catch (err) {
+      console.error('[nutsd] Pending receive scan failed:', err);
+    }
+    return recovered;
+  }, [repo, mints, addMint, safeStoreReceivedProofs]);
+
   // Wire startup recovery ref — called by the mints-dependent effect above
   // AFTER proofs are loaded. The loaded proofs are passed directly to avoid
   // depending on React state (setProofs is async and may not have committed).
@@ -1480,13 +1588,15 @@ export function useWallet() {
       const stashResult = await recoverProofStashes();
       // Resume any pending cross-mint swaps (second leg).
       await resumePendingSwaps();
-      // If stash recovery or swap resume wrote new proofs, re-load.
-      const proofsForReconciliation = stashResult
+      // Resume any pending Lightning / LNURL-withdraw receives.
+      const receiveResult = await resumePendingReceives();
+      // If any recovery wrote new proofs, re-load.
+      const proofsForReconciliation = (stashResult || receiveResult)
         ? await refreshProofs()
         : freshProofs;
       await reconcilePendingProofs(proofsForReconciliation);
     };
-  }, [recoverProofStashes, resumePendingSwaps, refreshProofs, reconcilePendingProofs]);
+  }, [recoverProofStashes, resumePendingSwaps, resumePendingReceives, refreshProofs, reconcilePendingProofs]);
 
   // =========================================================================
   // Transaction CRUD
@@ -1517,6 +1627,43 @@ export function useWallet() {
     };
     setTransactions(prev => [tx, ...prev]);
     return tx;
+  }, [repo]);
+
+  /**
+   * Complete a pending transaction (e.g. after a mint quote is paid).
+   * Updates status to 'completed', clears the pending-state memo, and
+   * optionally updates the amount (useful when final amount differs).
+   */
+  const completeTransaction = useCallback(async (
+    txId: string,
+    opts?: { amount?: number; memo?: string },
+  ) => {
+    if (!repo) return;
+    try {
+      const { records } = await repo.transaction.query();
+      const record = records.find((r: { id: string }) => r.id === txId);
+      if (record) {
+        const data: TransactionData = await record.data.json();
+        await record.update({
+          data: {
+            ...data,
+            status: 'completed',
+            amount: opts?.amount ?? data.amount,
+            memo: opts?.memo ?? undefined,
+          },
+        });
+        setTransactions(prev =>
+          prev.map(t => t.id === txId ? {
+            ...t,
+            status: 'completed' as const,
+            amount: opts?.amount ?? t.amount,
+            memo: opts?.memo ?? undefined,
+          } : t),
+        );
+      }
+    } catch (err) {
+      console.warn('[nutsd] Failed to complete transaction:', err);
+    }
   }, [repo]);
 
   /**
@@ -1776,6 +1923,7 @@ export function useWallet() {
 
     // Transaction operations
     addTransaction,
+    completeTransaction,
     markTransactionClaimed,
     refreshTransactions,
 

@@ -79,6 +79,7 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
     removeMint,
     deleteProofs,
     addTransaction,
+    completeTransaction,
     markTransactionClaimed,
     getUnspentProofsForMint,
     getUnspentProofsByContext,
@@ -108,6 +109,8 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
   const [showReceive, setShowReceive] = useState(false);
   /** When set, the Receive dialog opens in claim-token mode instead of channels. */
   const [receiveClaimToken, setReceiveClaimToken] = useState<string | null>(null);
+  /** When set, the Receive dialog opens in LNURL-withdraw mode. */
+  const [receiveLnurlWithdraw, setReceiveLnurlWithdraw] = useState<string | null>(null);
   const [selectedMint, setSelectedMint] = useState<Mint | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -362,6 +365,13 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
     setShowAddMint(true);
   }, []);
 
+  /** The Send dialog detected an LNURL-withdraw → hand off to Receive in withdraw mode. */
+  const handleSwitchToLnurlWithdraw = useCallback((lnurl: string) => {
+    setShowSend(false);
+    setReceiveLnurlWithdraw(lnurl);
+    setShowReceive(true);
+  }, []);
+
   /** Reclaim an unclaimed sent token (NUT-07 reports all proofs UNSPENT). */
   const handleReclaimToken = useCallback(async (tx: Transaction) => {
     if (!tx.cashuToken) throw new Error('No token to reclaim');
@@ -551,7 +561,7 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
             ) : (
               <PrimaryActions
                 onSend={() => setShowSend(true)}
-                onReceive={() => { setReceiveClaimToken(null); setShowReceive(true); }}
+                onReceive={() => { setReceiveClaimToken(null); setReceiveLnurlWithdraw(null); setShowReceive(true); }}
               />
             )}
 
@@ -602,22 +612,27 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
           onMarkClaimed={markTransactionClaimed}
           onSwitchToReceive={handleSwitchToReceive}
           onSwitchToAddMint={handleSwitchToAddMint}
+          onSwitchToLnurlWithdraw={handleSwitchToLnurlWithdraw}
         />
       )}
 
       {showReceive && (
         <UnifiedReceiveDialog
           mints={mints}
+          mintHealth={mintHealth}
           did={did ?? undefined}
           p2pkPrivateKey={p2pkKey?.privateKey}
           claimToken={receiveClaimToken ?? undefined}
+          lnurlWithdraw={receiveLnurlWithdraw ?? undefined}
           onUnknownMint={handleUnknownMint}
           onClose={() => {
             setShowReceive(false);
             setReceiveClaimToken(null);
+            setReceiveLnurlWithdraw(null);
           }}
           onProofsReceived={storeNewProofsForMintUrl}
           onTransactionCreated={recordTransaction}
+          onTransactionCompleted={completeTransaction}
         />
       )}
 

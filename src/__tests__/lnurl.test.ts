@@ -99,13 +99,13 @@ describe('resolveLightningAddress', () => {
     await expect(resolveLightningAddress('user@err.com')).rejects.toThrow('User not found');
   });
 
-  it('throws on non-payRequest tag', async () => {
+  it('throws LnurlWithdrawDetectedError on withdrawRequest tag', async () => {
     globalThis.fetch = vi.fn(async () => ({
       ok: true,
       json: async () => ({ tag: 'withdrawRequest' }),
     })) as any;
 
-    await expect(resolveLightningAddress('user@withdraw.com')).rejects.toThrow('Expected LNURL payRequest');
+    await expect(resolveLightningAddress('user@withdraw.com')).rejects.toThrow('LNURL-withdraw');
   });
 });
 

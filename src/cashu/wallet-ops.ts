@@ -18,7 +18,7 @@ import {
 } from '@cashu/cashu-ts';
 
 // Re-export for consumers that need the quote types
-export type { MintQuoteBolt11Response, MeltQuoteBolt11Response, MintInfo, MintKeys };
+export type { MintQuoteBolt11Response, MeltQuoteBolt11Response, MintInfo };
 
 // ---------------------------------------------------------------------------
 // Wallet instance cache — one Wallet per mint URL
@@ -187,23 +187,6 @@ export async function receiveToken(
 // Check proof state
 // ---------------------------------------------------------------------------
 
-export type ProofStateResult = {
-  Y: string;
-  state: 'UNSPENT' | 'PENDING' | 'SPENT';
-  witness: string | null;
-};
-
-/** Check the state of proofs with the mint (NUT-07). */
-export async function checkProofsState(
-  mintUrl: string,
-  proofs: Proof[],
-  unit = 'sat',
-): Promise<ProofStateResult[]> {
-  const wallet = await getWallet(mintUrl, unit);
-  const result = await wallet.checkProofsStates(proofs);
-  return result as ProofStateResult[];
-}
-
 /**
  * Group proofs by their mint-side state using NUT-07.
  *
@@ -260,28 +243,6 @@ export async function mintSupportsNut07(mintUrl: string, unit = 'sat'): Promise<
   }
 }
 
-/**
- * Check whether the mint supports NUT-17 proof_state over WebSocket.
- * Returns true when NUT-17 lists 'proof_state' under a bolt11+unit block.
- */
-export async function mintSupportsNut17ProofState(
-  mintUrl: string, unit = 'sat',
-): Promise<boolean | null> {
-  try {
-    const info = await getMintInfo(mintUrl, unit);
-    const raw = info as any;
-    const nuts = raw?.contactInfo ?? raw?._data?.nuts ?? raw?.nuts;
-    const nut17 = nuts?.['17'];
-    const supported = nut17?.supported;
-    if (!Array.isArray(supported)) return false;
-    return supported.some((s: any) =>
-      s.method === 'bolt11' && s.unit === unit && Array.isArray(s.commands) && s.commands.includes('proof_state'),
-    );
-  } catch {
-    return null;
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Mint info
 // ---------------------------------------------------------------------------
@@ -290,12 +251,6 @@ export async function mintSupportsNut17ProofState(
 export async function getMintInfo(mintUrl: string, unit = 'sat'): Promise<MintInfo> {
   const wallet = await getWallet(mintUrl, unit);
   return wallet.getMintInfo();
-}
-
-/** Fetch mint keysets (the full key chain). */
-export async function getMintKeysets(mintUrl: string, unit = 'sat') {
-  const wallet = await getWallet(mintUrl, unit);
-  return wallet.keyChain;
 }
 
 /**

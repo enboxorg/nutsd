@@ -72,8 +72,15 @@ import { encodePaymentRequest } from '@/cashu/payment-request';
 import { extractMintUrl, isCashuToken, isP2pkLockedToken, parseToken } from '@/cashu/token-utils';
 import { receiveP2pkLocked } from '@/cashu/p2pk';
 import { subscribeToQuote } from '@/lib/mint-ws';
+import { fetchLnurlWithdrawInfo, submitLnurlWithdraw, msatToSats } from '@/lib/lnurl-withdraw';
+import { decodeLnurl } from '@/lib/lnurl';
+import { resolveReceiveInput } from '@/lib/resolve-receive-input';
+import { serializePendingMintState, type PendingMintState } from '@/cashu/pending-mint-recovery';
 import { acquireWalletLock } from '@/lib/wallet-mutex';
 import { formatAmount, toastError, toastSuccess, truncateMintUrl, truncateMiddle } from '@/lib/utils';
+
+import { InlineQrScanner } from '@/components/wallet/inline-qr-scanner';
+import { ClipboardButton } from '@/components/wallet/clipboard-button';
 
 // ---------------------------------------------------------------------------
 // Props & types
@@ -83,6 +90,8 @@ type Channel = 'lightning' | 'cashu' | 'address';
 
 export interface UnifiedReceiveDialogProps {
   mints: Mint[];
+  /** Per-mint reachability status (contextId → reachable). */
+  mintHealth?: Map<string, boolean>;
   /** User's own DID, shown as the static receive address. */
   did?: string;
   /** P2PK private key for unlocking incoming P2PK-locked tokens in claim mode. */
@@ -97,6 +106,13 @@ export interface UnifiedReceiveDialogProps {
   claimToken?: string;
 
   /**
+   * When provided, the dialog opens in "LNURL withdraw" mode — it resolves
+   * the LNURL, creates a mint quote, submits the invoice, and waits for payment.
+   * Set by the Send dialog when an LNURL resolves to a withdrawRequest.
+   */
+  lnurlWithdraw?: string;
+
+  /**
    * Called when a token in claim mode is from an unknown mint. The parent
    * should close this dialog and open the trust-mint dialog.
    */
@@ -105,6 +121,8 @@ export interface UnifiedReceiveDialogProps {
   onClose: () => void;
   onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
+  /** Update a pending transaction to completed (used for recovery-safe receive flows). */
+  onTransactionCompleted?: (txId: string, opts?: { amount?: number; memo?: string }) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,10 +134,13 @@ export const UnifiedReceiveDialog: React.FC<UnifiedReceiveDialogProps> = ({
   did,
   p2pkPrivateKey,
   claimToken,
+  lnurlWithdraw,
+  mintHealth,
   onUnknownMint,
   onClose,
   onProofsReceived,
   onTransactionCreated,
+  onTransactionCompleted,
 }) => {
   // Claim mode takes over the whole dialog when a claimToken is passed.
   if (claimToken) {
@@ -136,13 +157,30 @@ export const UnifiedReceiveDialog: React.FC<UnifiedReceiveDialogProps> = ({
     );
   }
 
+  // LNURL-withdraw mode: service pays you.
+  if (lnurlWithdraw) {
+    return (
+      <LnurlWithdrawPane
+        mints={mints}
+        mintHealth={mintHealth}
+        lnurl={lnurlWithdraw}
+        onClose={onClose}
+        onProofsReceived={onProofsReceived}
+        onTransactionCreated={onTransactionCreated}
+        onTransactionCompleted={onTransactionCompleted}
+      />
+    );
+  }
+
   return (
     <ChannelsReceive
       mints={mints}
+      mintHealth={mintHealth}
       did={did}
       onClose={onClose}
       onProofsReceived={onProofsReceived}
       onTransactionCreated={onTransactionCreated}
+      onTransactionCompleted={onTransactionCompleted}
     />
   );
 };
@@ -161,11 +199,103 @@ type LnStep = 'amount' | 'invoice' | 'waiting' | 'done' | 'error';
 
 const ChannelsReceive: React.FC<{
   mints: Mint[];
+  mintHealth?: Map<string, boolean>;
   did?: string;
   onClose: () => void;
   onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
-}> = ({ mints, did, onClose, onProofsReceived, onTransactionCreated }) => {
+  onTransactionCompleted?: (txId: string, opts?: { amount?: number; memo?: string }) => Promise<void>;
+}> = ({ mints, mintHealth, did, onClose, onProofsReceived, onTransactionCreated, onTransactionCompleted }) => {
+  // ── Scan/paste can switch the dialog into claim-token or lnurl-withdraw mode ──
+  const [scannedToken, setScannedToken] = useState<string | null>(null);
+  const [scannedLnurlWithdraw, setScannedLnurlWithdraw] = useState<string | null>(null);
+  const [cameraActive, setCameraActive] = useState(false);
+  const [resolving, setResolving] = useState(false);
+
+  const handleScanOrPaste = useCallback(async (raw: string) => {
+    setCameraActive(false);
+    setResolving(true);
+    try {
+      const result = await resolveReceiveInput(raw);
+      switch (result.type) {
+        case 'cashu-token':
+          setScannedToken(result.value);
+          break;
+        case 'lnurl-withdraw':
+          setScannedLnurlWithdraw(result.value);
+          break;
+        case 'wrong-context':
+          toastError('Wrong flow', new Error(result.message));
+          break;
+        case 'unknown':
+          toastError('Not recognized', new Error(result.message));
+          break;
+      }
+    } finally {
+      setResolving(false);
+    }
+  }, []);
+
+  // If scanned a token, switch to claim mode
+  if (scannedToken) {
+    return (
+      <ClaimTokenPane
+        mints={mints}
+        token={scannedToken}
+        onClose={() => setScannedToken(null)}
+        onProofsReceived={onProofsReceived}
+        onTransactionCreated={onTransactionCreated}
+      />
+    );
+  }
+
+  // If scanned an LNURL-withdraw, switch to withdraw mode
+  if (scannedLnurlWithdraw) {
+    return (
+      <LnurlWithdrawPane
+        mints={mints}
+        mintHealth={mintHealth}
+        lnurl={scannedLnurlWithdraw}
+        onClose={() => setScannedLnurlWithdraw(null)}
+        onProofsReceived={onProofsReceived}
+        onTransactionCreated={onTransactionCreated}
+        onTransactionCompleted={onTransactionCompleted}
+      />
+    );
+  }
+
+  return (
+    <ChannelsReceiveInner
+      mints={mints}
+      did={did}
+      cameraActive={cameraActive}
+      resolving={resolving}
+      onCameraToggle={setCameraActive}
+      onScanOrPaste={handleScanOrPaste}
+      onClose={onClose}
+      onProofsReceived={onProofsReceived}
+      onTransactionCreated={onTransactionCreated}
+      onTransactionCompleted={onTransactionCompleted}
+      mintHealth={mintHealth}
+    />
+  );
+};
+
+/** Inner channels view (separated so scan/paste can swap the whole component). */
+const ChannelsReceiveInner: React.FC<{
+  mints: Mint[];
+  mintHealth?: Map<string, boolean>;
+  did?: string;
+  cameraActive: boolean;
+  /** True while an LNURL is being resolved after scan/paste. */
+  resolving: boolean;
+  onCameraToggle: (active: boolean) => void;
+  onScanOrPaste: (raw: string) => void;
+  onClose: () => void;
+  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
+  onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
+  onTransactionCompleted?: (txId: string, opts?: { amount?: number; memo?: string }) => Promise<void>;
+}> = ({ mints, mintHealth, did, cameraActive, resolving, onCameraToggle, onScanOrPaste, onClose, onProofsReceived, onTransactionCreated, onTransactionCompleted }) => {
   // Default channel: Cashu (most universal — works for any cashu wallet).
   // If the user has no DID, hide Address. If they have no mints, hide Lightning.
   const availableChannels = useMemo<ReadonlyArray<SegmentOption<Channel>>>(
@@ -292,6 +422,18 @@ const ChannelsReceive: React.FC<{
       const quoteExpiry = quote.expiry ?? null;
       const amt = n;
 
+      // Persist pending state so a page refresh can resume.
+      const pendingState: PendingMintState = {
+        quoteId, mintUrl, mintContextId: mintCtx,
+        amount: amt, unit: mintUnit,
+        expiry: quoteExpiry, source: 'lightning',
+      };
+      const pendingTxId = await onTransactionCreated({
+        type: 'mint', amount: amt, unit: mintUnit, mintUrl,
+        status: 'pending',
+        memo: serializePendingMintState(pendingState),
+      });
+
       stopPollingRef.current = subscribeToQuote({
         mintUrl,
         quoteId,
@@ -311,14 +453,16 @@ const ChannelsReceive: React.FC<{
               }
 
               await onProofsReceived(mintCtx, proofs, mintUrl);
-              await onTransactionCreated({
-                type   : 'mint',
-                amount : amt,
-                unit   : mintUnit,
-                mintUrl,
-                status : 'completed',
-                memo   : 'Lightning receive',
-              });
+
+              // Complete the pending transaction (or create a new one if pending write failed).
+              if (pendingTxId && onTransactionCompleted) {
+                await onTransactionCompleted(pendingTxId, { amount: amt, memo: 'Lightning receive' });
+              } else {
+                await onTransactionCreated({
+                  type: 'mint', amount: amt, unit: mintUnit, mintUrl,
+                  status: 'completed', memo: 'Lightning receive',
+                });
+              }
 
               if (mountedRef.current) {
                 setLnReceivedAmount(amt);
@@ -510,6 +654,31 @@ const ChannelsReceive: React.FC<{
               aria-label="Receive channel"
             />
 
+            {/* Scan/paste bar — detect cashu tokens, LNURL-withdraw links */}
+            <div className="space-y-2">
+              {resolving ? (
+                <div className="flex items-center justify-center gap-2 py-3 text-[11px] text-muted-foreground">
+                  <Loader2Icon className="h-3 w-3 animate-spin" />
+                  Resolving LNURL…
+                </div>
+              ) : (
+                <>
+                  <InlineQrScanner
+                    active={cameraActive}
+                    onRequestStart={() => onCameraToggle(true)}
+                    onScan={onScanOrPaste}
+                    onError={(msg) => toastError('Scanner error', new Error(msg))}
+                  />
+                  {!cameraActive && (
+                    <ClipboardButton
+                      onPaste={(detected) => onScanOrPaste(detected.value)}
+                      highlightType={null}
+                    />
+                  )}
+                </>
+              )}
+            </div>
+
             {/* Mint picker — shown only for Lightning & Cashu, and only if multiple mints */}
             {(channel === 'lightning' || channel === 'cashu') && mints.length > 1 && (
               <div className="space-y-1.5">
@@ -517,9 +686,9 @@ const ChannelsReceive: React.FC<{
                   Mint
                 </label>
                 <select
-                  value={selectedMint?.url ?? ''}
+                  value={selectedMint?.contextId ?? ''}
                   onChange={(e) => {
-                    setSelectedMint(mints.find((m) => m.url === e.target.value) ?? null);
+                    setSelectedMint(mints.find((m) => m.contextId === e.target.value) ?? null);
                     // Lightning: invalidate any pending invoice since mint changed.
                     if (channel === 'lightning' && lnStep !== 'amount') {
                       stopPollingRef.current?.();
@@ -532,11 +701,21 @@ const ChannelsReceive: React.FC<{
                   className="w-full px-3 py-2.5 rounded-lg bg-background border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-60"
                 >
                   {mints.map((m) => (
-                    <option key={`${m.url}-${m.unit}`} value={m.url}>
+                    <option key={m.contextId} value={m.contextId}>
                       {m.name || truncateMintUrl(m.url)} ({m.unit})
                     </option>
                   ))}
                 </select>
+              </div>
+            )}
+
+            {/* Mint health warning */}
+            {selectedMint && mintHealth && channel !== 'address' && mintHealth.get(selectedMint.contextId) === false && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30">
+                <AlertCircleIcon className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+                <span className="text-[11px] text-amber-600 dark:text-amber-400">
+                  This mint appears unreachable. {channel === 'lightning' ? 'Invoice generation may fail.' : 'Payment requests may not be fulfilled.'}
+                </span>
               </div>
             )}
 
@@ -844,6 +1023,348 @@ const ClaimTokenPane: React.FC<{
               <div className="text-lg font-semibold">Received</div>
               <div className="amount-display text-3xl font-bold text-foreground">
                 {formatAmount(receivedAmount, tokenUnit)}
+              </div>
+            </div>
+            <button
+              onClick={onClose}
+              className="mt-4 px-8 py-2.5 rounded-full bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition-opacity"
+            >
+              Done
+            </button>
+          </div>
+        )}
+
+        {step === 'error' && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-3 p-3 rounded-xl bg-destructive/10 border border-destructive/30">
+              <AlertCircleIcon className="h-4 w-4 text-destructive shrink-0" />
+              <div className="text-xs text-muted-foreground">{errorMsg}</div>
+            </div>
+            <button
+              onClick={onClose}
+              className="w-full px-4 py-2.5 rounded-full bg-primary text-primary-foreground text-sm font-medium"
+            >
+              Close
+            </button>
+          </div>
+        )}
+      </div>
+    </DialogWrapper>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// LNURL-withdraw mode
+// ---------------------------------------------------------------------------
+
+type WithdrawStep = 'resolving' | 'ready' | 'withdrawing' | 'waiting' | 'done' | 'error';
+
+const LnurlWithdrawPane: React.FC<{
+  mints: Mint[];
+  mintHealth?: Map<string, boolean>;
+  lnurl: string;
+  onClose: () => void;
+  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
+  onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
+  onTransactionCompleted?: (txId: string, opts?: { amount?: number; memo?: string }) => Promise<void>;
+}> = ({ mints, mintHealth, lnurl, onClose, onProofsReceived, onTransactionCreated, onTransactionCompleted }) => {
+  // LNURL-withdraw amounts are defined in millisats/sats by the LN service.
+  // Only sat-unit mints are semantically valid here — a usd-unit mint would
+  // create a quote in cents while the amount is in sats.
+  const satMints = useMemo(() => mints.filter((m) => m.unit === 'sat'), [mints]);
+
+  const [step, setStep] = useState<WithdrawStep>('resolving');
+  const [withdrawInfo, setWithdrawInfo] = useState<{
+    callback: string; k1: string;
+    minSats: number; maxSats: number; description: string;
+  } | null>(null);
+  const [selectedMint, setSelectedMint] = useState<Mint | null>(satMints[0] ?? null);
+  const [amount, setAmount] = useState('');
+  const [receivedAmount, setReceivedAmount] = useState(0);
+  const [errorMsg, setErrorMsg] = useState('');
+  const stopPollingRef = useRef<(() => void) | undefined>();
+  const mountedRef = useRef(true);
+
+  // Only block dismissal during the brief submit phase. During 'waiting',
+  // the pending state is persisted and startup recovery can resume — the
+  // user is free to close the dialog without losing the flow.
+  const preventClose = step === 'withdrawing';
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      stopPollingRef.current?.();
+    };
+  }, []);
+
+  // ── Resolve the LNURL to get withdraw info ──
+  useEffect(() => {
+    if (satMints.length === 0) {
+      setErrorMsg('LNURL-withdraw requires a sat-unit mint. Add a sat mint first.');
+      setStep('error');
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        // Decode if it's a bech32 LNURL, otherwise use as-is (plain URL)
+        const url = lnurl.toLowerCase().startsWith('lnurl1')
+          ? decodeLnurl(lnurl)
+          : lnurl;
+        const info = await fetchLnurlWithdrawInfo(url);
+        if (cancelled) return;
+
+        const minSats = msatToSats(info.minWithdrawable);
+        const maxSats = msatToSats(info.maxWithdrawable);
+        setWithdrawInfo({
+          callback: info.callback,
+          k1: info.k1,
+          minSats,
+          maxSats,
+          description: info.defaultDescription,
+        });
+        // Pre-fill with max amount (most common for faucets/rewards)
+        setAmount(String(maxSats));
+        setStep('ready');
+      } catch (err) {
+        if (cancelled) return;
+        setErrorMsg(err instanceof Error ? err.message : 'Failed to resolve LNURL');
+        setStep('error');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [lnurl, satMints.length]);
+
+  const handleWithdraw = async () => {
+    if (!withdrawInfo || !selectedMint) return;
+    const amt = parseInt(amount, 10);
+    if (isNaN(amt) || amt < withdrawInfo.minSats || amt > withdrawInfo.maxSats) return;
+
+    setStep('withdrawing');
+
+    // Capture values in closure before async work.
+    const mintUrl = selectedMint.url;
+    const mintUnit = 'sat'; // LNURL-withdraw is always sats
+    const mintCtx = selectedMint.contextId;
+
+    try {
+      // Step 1: Create a mint quote (Lightning invoice) at our mint.
+      // No wallet lock needed — quote creation is idempotent.
+      const quote = await createMintQuote(mintUrl, amt, mintUnit);
+      if (!mountedRef.current) return;
+
+      const quoteId = quote.quote;
+      const quoteExpiry = quote.expiry ?? null;
+
+      // Step 2: Persist pending state BEFORE submitting to the external
+      // service. Once the service has the invoice it may pay at any time,
+      // so the recovery record must already exist. (WAL principle.)
+      const pendingState: PendingMintState = {
+        quoteId, mintUrl, mintContextId: mintCtx,
+        amount: amt, unit: mintUnit,
+        expiry: quoteExpiry, source: 'lnurl-withdraw',
+      };
+      const pendingTxId = await onTransactionCreated({
+        type: 'mint', amount: amt, unit: mintUnit, mintUrl,
+        status: 'pending',
+        memo: serializePendingMintState(pendingState),
+      });
+
+      // Step 3: Submit the invoice to the LNURL-withdraw service.
+      // If this fails, the pending record exists but the service never
+      // got the invoice — recovery will see UNPAID and eventually expire.
+      await submitLnurlWithdraw(withdrawInfo.callback, withdrawInfo.k1, quote.request);
+      if (!mountedRef.current) return;
+      setStep('waiting');
+
+      // Step 4: Wait for payment. The wallet lock is NOT held here —
+      // only acquired briefly inside onPaid for the mint/store critical
+      // section (same pattern as Lightning receive).
+      stopPollingRef.current = subscribeToQuote({
+        mintUrl,
+        quoteId,
+        quoteType: 'bolt11_mint_quote',
+        callbacks: {
+          onPaid: async () => {
+            if (!mountedRef.current) return;
+            let releaseLock: (() => void) | undefined;
+            try {
+              releaseLock = await acquireWalletLock('lnurl-withdraw-mint');
+              const proofs = await mintTokens(mintUrl, amt, quoteId, mintUnit);
+              if (!mountedRef.current) return;
+
+              if (!(await isDleqValid(mintUrl, proofs))) {
+                console.warn('[nutsd:financial] DLEQ verification failed on LNURL-withdraw proofs');
+              }
+
+              await onProofsReceived(mintCtx, proofs, mintUrl);
+
+              // Complete the pending transaction.
+              const memo = `LNURL withdraw${withdrawInfo.description ? `: ${withdrawInfo.description}` : ''}`;
+              if (pendingTxId && onTransactionCompleted) {
+                await onTransactionCompleted(pendingTxId, { amount: amt, memo });
+              } else {
+                await onTransactionCreated({
+                  type: 'mint', amount: amt, unit: mintUnit, mintUrl,
+                  status: 'completed', memo,
+                });
+              }
+
+              if (mountedRef.current) {
+                setReceivedAmount(amt);
+                setStep('done');
+                toastSuccess('Received!', `+${formatAmount(amt, mintUnit)}`);
+              }
+            } catch (err) {
+              if (mountedRef.current) {
+                setErrorMsg(err instanceof Error ? err.message : 'Failed to mint tokens');
+                setStep('error');
+              }
+            } finally {
+              releaseLock?.();
+            }
+          },
+          onExpired: () => {
+            if (mountedRef.current) {
+              setErrorMsg('The invoice expired before the service paid it.');
+              setStep('error');
+            }
+          },
+          onIssued: () => {
+            if (mountedRef.current) {
+              setErrorMsg('These tokens were already minted (possibly in another session).');
+              setStep('error');
+            }
+          },
+          isActive: () => mountedRef.current,
+        },
+        checkFn: () => checkMintQuote(mintUrl, quoteId, mintUnit).then((s) => ({
+          state  : s.state as 'UNPAID' | 'PAID' | 'ISSUED',
+          expiry : s.expiry ?? null,
+        })),
+        expiry: quoteExpiry,
+      });
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+      setStep('error');
+    }
+  };
+
+  const amtNum = parseInt(amount, 10) || 0;
+  const inRange = withdrawInfo
+    ? amtNum >= withdrawInfo.minSats && amtNum <= withdrawInfo.maxSats
+    : false;
+
+  return (
+    <DialogWrapper
+      open={true}
+      onClose={onClose}
+      title="LNURL Withdraw"
+      maxWidth="max-w-md"
+      preventClose={preventClose}
+    >
+      <div className="space-y-4">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <DownloadIcon className="h-5 w-5 text-[var(--color-info)]" />
+            <h3 className="text-lg font-semibold">
+              {step === 'done' ? 'Received!' : 'LNURL Withdraw'}
+            </h3>
+          </div>
+          {!preventClose && (
+            <button onClick={onClose} className="text-muted-foreground hover:text-foreground" aria-label="Close">
+              <XIcon className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+
+        {step === 'resolving' && (
+          <div className="flex flex-col items-center py-10 gap-3">
+            <Loader2Icon className="h-8 w-8 animate-spin text-primary" />
+            <div className="text-sm text-muted-foreground">Resolving LNURL...</div>
+          </div>
+        )}
+
+        {step === 'ready' && withdrawInfo && (
+          <div className="space-y-4">
+            {withdrawInfo.description && (
+              <p className="text-xs text-muted-foreground text-center">{withdrawInfo.description}</p>
+            )}
+
+            {satMints.length > 1 && (
+              <div className="space-y-1.5">
+                <label className="text-[10px] uppercase tracking-wider font-medium text-muted-foreground px-1">
+                  Mint
+                </label>
+                <select
+                  value={selectedMint?.contextId ?? ''}
+                  onChange={(e) => setSelectedMint(satMints.find((m) => m.contextId === e.target.value) ?? null)}
+                  className="w-full px-3 py-2.5 rounded-lg bg-background border border-border text-sm"
+                >
+                  {satMints.map((m) => (
+                    <option key={m.contextId} value={m.contextId}>{m.name || truncateMintUrl(m.url)}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* Mint health warning */}
+            {selectedMint && mintHealth && mintHealth.get(selectedMint.contextId) === false && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30">
+                <AlertCircleIcon className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+                <span className="text-[11px] text-amber-600 dark:text-amber-400">
+                  This mint appears unreachable. The withdrawal may fail.
+                </span>
+              </div>
+            )}
+
+            <AmountInput
+              value={amount}
+              onChange={setAmount}
+              unit="sat"
+              max={withdrawInfo.maxSats}
+              autoFocus
+            />
+
+            {withdrawInfo.minSats !== withdrawInfo.maxSats && (
+              <p className="text-[10px] text-muted-foreground text-center">
+                {formatAmount(withdrawInfo.minSats)} – {formatAmount(withdrawInfo.maxSats)} sats available
+              </p>
+            )}
+
+            <button
+              onClick={handleWithdraw}
+              disabled={!inRange || !selectedMint}
+              className="w-full px-4 py-2.5 rounded-full bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Withdraw
+            </button>
+          </div>
+        )}
+
+        {step === 'withdrawing' && (
+          <div className="flex flex-col items-center py-10 gap-3">
+            <Loader2Icon className="h-8 w-8 animate-spin text-primary" />
+            <div className="text-sm text-muted-foreground">Submitting withdrawal request...</div>
+          </div>
+        )}
+
+        {step === 'waiting' && (
+          <div className="flex flex-col items-center py-10 gap-3">
+            <Loader2Icon className="h-8 w-8 animate-spin text-primary" />
+            <div className="text-sm text-muted-foreground">Waiting for service to pay...</div>
+          </div>
+        )}
+
+        {step === 'done' && (
+          <div className="flex flex-col items-center py-10 gap-3 animate-in fade-in duration-200">
+            <CheckCircleIcon className="h-14 w-14 text-[var(--color-success)]" />
+            <div className="text-center space-y-1">
+              <div className="text-lg font-semibold">Received</div>
+              <div className="amount-display text-3xl font-bold text-foreground">
+                {formatAmount(receivedAmount, 'sat')}
               </div>
             </div>
             <button

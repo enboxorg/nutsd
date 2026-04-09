@@ -35,12 +35,19 @@ export type LnurlPayResponse = {
   avatarUrl?: string;
 };
 
-export type LnurlInvoiceResponse = {
-  /** BOLT-11 Lightning invoice. */
-  pr: string;
-  /** Optional: routes hint. */
-  routes?: unknown[];
-};
+/**
+ * Error thrown when an LNURL resolves to `withdrawRequest` instead of `payRequest`.
+ * Callers in the send flow catch this to redirect to the receive flow.
+ */
+export class LnurlWithdrawDetectedError extends Error {
+  /** The raw URL that returned the withdraw response. */
+  readonly url: string;
+  constructor(url: string) {
+    super('This is an LNURL-withdraw link (receive, not send).');
+    this.name = 'LnurlWithdrawDetectedError';
+    this.url = url;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Resolution
@@ -129,8 +136,11 @@ async function fetchLnurlPay(url: string): Promise<LnurlPayResponse> {
   if (data.status === 'ERROR') {
     throw new Error(data.reason || 'LNURL endpoint returned an error');
   }
+  if (data.tag === 'withdrawRequest') {
+    throw new LnurlWithdrawDetectedError(url);
+  }
   if (data.tag !== 'payRequest') {
-    throw new Error(`Expected LNURL payRequest, got: ${data.tag || 'unknown'}`);
+    throw new Error(`Unsupported LNURL tag: ${data.tag || 'unknown'}`);
   }
 
   const result: LnurlPayResponse = {
