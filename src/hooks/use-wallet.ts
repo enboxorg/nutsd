@@ -1540,15 +1540,18 @@ export function useWallet() {
 
               if (fullyPersisted) {
                 const total = result.proofs.reduce((s, p) => s + p.amount, 0);
+                const sourceLabel = state.source === 'lnurl-withdraw'
+                  ? `LNURL withdraw${state.description ? `: ${state.description}` : ''}`
+                  : 'Lightning receive';
                 await record.update({
-                  data: { ...tx, status: 'completed', amount: total, memo: `Recovered ${state.source} receive` },
+                  data: { ...tx, status: 'completed', amount: total, memo: sourceLabel },
                 });
                 console.log(`[nutsd] Pending ${state.source} receive completed: ${total} ${state.unit}`);
                 recovered = true;
               }
               break;
             }
-            case 'issued':
+            case 'issued': {
               // ISSUED = tokens were already minted by a previous attempt.
               //
               // IMPORTANT: This does NOT guarantee the proofs are in the
@@ -1563,11 +1566,14 @@ export function useWallet() {
               // window and are lost. Keeping this pending would just hit
               // ISSUED forever with no recovery path — marking completed
               // (with a warning) is the honest outcome.
+              const issuedLabel = state.source === 'lnurl-withdraw'
+                ? `LNURL withdraw${state.description ? `: ${state.description}` : ''}`
+                : 'Lightning receive';
               await record.update({
                 data: {
                   ...tx,
                   status: 'completed',
-                  memo: 'Recovered (ISSUED — proofs may have been recovered via stash, or lost in pre-stash crash window)',
+                  memo: `${issuedLabel} (recovered — proofs may have been restored via stash)`,
                 },
               });
               console.warn(
@@ -1577,6 +1583,7 @@ export function useWallet() {
               );
               recovered = true;
               break;
+            }
             case 'expired':
               await record.update({ data: { ...tx, status: 'failed', memo: 'Quote expired before payment' } });
               console.log(`[nutsd] Pending receive expired: ${state.quoteId}`);
@@ -1814,8 +1821,12 @@ export function useWallet() {
     );
     if (pendingInvoices.length === 0) return;
     let cancelled = false;
+    let sweepInFlight = false;
 
     const sweep = async (): Promise<void> => {
+      if (sweepInFlight) return; // previous iteration still running
+      sweepInFlight = true;
+      try {
       for (const tx of pendingInvoices) {
         if (cancelled) break;
         // Skip expired invoices — no need to poll
@@ -1848,12 +1859,19 @@ export function useWallet() {
         const sweepAction = decideSweepAction(quoteState, source, state.expiry, state.description);
 
         if (sweepAction.type === 'complete') {
-          const sweepDeps: SweepDeps = { recoverProofStashes, refreshProofs, completeTransaction };
-          const outcome = await handleIssuedQuote(tx.id, sweepAction, sweepDeps);
-          if (outcome.result === 'deferred') {
-            console.warn(`[nutsd] Background sweep: ${outcome.reason} for ${state.quoteId}`);
-          } else {
-            console.warn(`[nutsd] Background sweep: invoice ISSUED: ${state.quoteId}`);
+          // ISSUED — stash recovery writes proofs, so we need the wallet lock.
+          const issuedLock = tryAcquireWalletLock('invoice-sweep-issued');
+          if (!issuedLock) continue; // lock held — defer to next cycle
+          try {
+            const sweepDeps: SweepDeps = { recoverProofStashes, refreshProofs, completeTransaction };
+            const outcome = await handleIssuedQuote(tx.id, sweepAction, sweepDeps);
+            if (outcome.result === 'deferred') {
+              console.warn(`[nutsd] Background sweep: ${outcome.reason} for ${state.quoteId}`);
+            } else {
+              console.warn(`[nutsd] Background sweep: invoice ISSUED: ${state.quoteId}`);
+            }
+          } finally {
+            issuedLock();
           }
           continue;
         }
@@ -1903,6 +1921,9 @@ export function useWallet() {
         } finally {
           releaseLock();
         }
+      }
+      } finally {
+        sweepInFlight = false;
       }
     };
 
