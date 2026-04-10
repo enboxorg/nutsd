@@ -411,8 +411,6 @@ const ChannelsReceiveInner: React.FC<{
     try {
       const quote = await createMintQuote(selectedMint.url, n, selectedMint.unit);
       if (!mountedRef.current) return;
-      setLnInvoice(quote.request);
-      setLnStep('invoice');
 
       // Capture values in closure; the state object may change by the time callbacks fire.
       const mintUrl = selectedMint.url;
@@ -422,7 +420,9 @@ const ChannelsReceiveInner: React.FC<{
       const quoteExpiry = quote.expiry ?? null;
       const amt = n;
 
-      // Persist pending state so a page refresh can resume.
+      // IMPORTANT: Persist the pending transaction BEFORE showing the QR.
+      // This ensures the recovery record exists in DWN before the invoice
+      // can be copied/shared. A crash or tab close after this point is safe.
       const pendingState: PendingMintState = {
         quoteId, mintUrl, mintContextId: mintCtx,
         amount: amt, unit: mintUnit,
@@ -439,6 +439,11 @@ const ChannelsReceiveInner: React.FC<{
         quoteId,
         expiresAt,
       });
+      if (!mountedRef.current) return;
+
+      // Now safe to show the QR — the recovery record is durable.
+      setLnInvoice(quote.request);
+      setLnStep('invoice');
 
       stopPollingRef.current = subscribeToQuote({
         mintUrl,
@@ -490,7 +495,15 @@ const ChannelsReceiveInner: React.FC<{
               setLnStep('error');
             }
           },
-          onIssued: () => {
+          onIssued: async () => {
+            // Mark the transaction completed — tokens were already minted
+            // in another session/tab. The background sweep or next startup
+            // will reconcile proofs if needed.
+            if (pendingTxId && onTransactionCompleted) {
+              await onTransactionCompleted(pendingTxId, {
+                memo: 'Lightning receive (already minted in another session)',
+              });
+            }
             if (mountedRef.current) {
               setLnError('These tokens were already minted (possibly in another session).');
               setLnStep('error');
@@ -1243,7 +1256,12 @@ const LnurlWithdrawPane: React.FC<{
               setStep('error');
             }
           },
-          onIssued: () => {
+          onIssued: async () => {
+            if (pendingTxId && onTransactionCompleted) {
+              await onTransactionCompleted(pendingTxId, {
+                memo: 'LNURL withdraw (already minted in another session)',
+              });
+            }
             if (mountedRef.current) {
               setErrorMsg('These tokens were already minted (possibly in another session).');
               setStep('error');

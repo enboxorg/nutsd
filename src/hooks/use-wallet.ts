@@ -52,6 +52,7 @@ import { recoverStashes, type RecoveryDeps } from '@/cashu/proof-stash-recovery'
 import { resumePendingSwap, type PendingSwapState } from '@/cashu/cross-mint-swap';
 import { resumePendingMint, parsePendingMintState } from '@/cashu/pending-mint-recovery';
 import { acquireWalletLock } from '@/lib/wallet-mutex';
+import { formatAmount, toastSuccess } from '@/lib/utils';
 
 // ---------------------------------------------------------------------------
 // Domain types — flattened from TypedRecord for the UI layer
@@ -1696,6 +1697,28 @@ export function useWallet() {
     setTransactions(prev => prev.filter(t => t.id !== txId));
   }, [repo]);
 
+  /** Mark a pending transaction as failed (e.g. expired invoice). Internal helper. */
+  const _markTransactionFailed = useCallback(async (txId: string, memo: string) => {
+    if (!repo) return;
+    try {
+      const { records } = await repo.transaction.query();
+      const record = records.find((r: { id: string }) => r.id === txId);
+      if (record) {
+        const data: TransactionData = await record.data.json();
+        await record.update({
+          data: { ...data, status: 'failed', memo, invoice: undefined, quoteId: undefined },
+        });
+        setTransactions(prev =>
+          prev.map(t => t.id === txId
+            ? { ...t, status: 'failed' as const, memo, invoice: undefined, quoteId: undefined }
+            : t),
+        );
+      }
+    } catch (err) {
+      console.warn('[nutsd] Failed to mark transaction failed:', err);
+    }
+  }, [repo]);
+
   /**
    * Mark a sent transaction as claimed by the recipient.
    * Clears the cashuToken (no longer needed) and sets claimStatus/claimedAt.
@@ -1761,6 +1784,82 @@ export function useWallet() {
 
     return () => { cancelled = true; clearInterval(timer); clearTimeout(initialTimer); };
   }, [repo, transactions, markTransactionClaimed]);
+
+  // =========================================================================
+  // Background pending-invoice sweep
+  // =========================================================================
+  // Periodically check if pending Lightning invoices have been paid. This
+  // covers the case where a user generates an invoice, closes the receive
+  // dialog, and the payer pays while the app is still open. Without this,
+  // settlement only happens on the next app restart.
+
+  useEffect(() => {
+    if (!repo || transactions.length === 0) return;
+    // Only sweep if there are active pending invoices
+    const pendingInvoices = transactions.filter(
+      tx => tx.type === 'mint' && tx.status === 'pending' && tx.quoteId && tx.memo,
+    );
+    if (pendingInvoices.length === 0) return;
+    let cancelled = false;
+
+    const sweep = async (): Promise<void> => {
+      for (const tx of pendingInvoices) {
+        if (cancelled) break;
+        // Skip expired invoices — no need to poll
+        if (tx.expiresAt && new Date(tx.expiresAt).getTime() < Date.now()) continue;
+
+        const state = parsePendingMintState(tx.memo!);
+        if (!state) continue;
+
+        try {
+          const result = await resumePendingMint(state);
+          if (cancelled) break;
+
+          switch (result.status) {
+            case 'minted': {
+              const mint = mints.find(m => m.contextId === state.mintContextId)
+                ?? mints.find(m => m.url === state.mintUrl);
+              if (!mint) {
+                console.warn(`[nutsd] Background sweep: unknown mint ${state.mintUrl}`);
+                break;
+              }
+              await safeStoreReceivedProofs(
+                mint.contextId, mint.url, mint.unit,
+                result.proofs.map(p => ({
+                  amount: p.amount, id: p.id, secret: p.secret, C: p.C, state: 'unspent' as const,
+                })),
+              );
+              const total = result.proofs.reduce((s, p) => s + p.amount, 0);
+              await completeTransaction(tx.id, { amount: total, memo: `Lightning receive` });
+              await refreshProofs();
+              toastSuccess('Payment received!', `+${formatAmount(total, mint.unit)}`);
+              console.log(`[nutsd] Background sweep settled invoice: ${total} ${mint.unit}`);
+              break;
+            }
+            case 'issued':
+              await completeTransaction(tx.id, { memo: 'Lightning receive (already minted)' });
+              console.warn(`[nutsd] Background sweep: invoice ISSUED (already minted): ${state.quoteId}`);
+              break;
+            case 'expired':
+              // Update status so UI shows it as failed
+              await _markTransactionFailed(tx.id, 'Quote expired before payment');
+              break;
+            case 'pending':
+              break; // still waiting
+            case 'error':
+              break; // skip, try again next sweep
+          }
+        } catch {
+          // skip — mint may be offline
+        }
+      }
+    };
+
+    const timer = setInterval(sweep, 15_000); // 15 seconds — invoices are time-sensitive
+    const initialTimer = setTimeout(sweep, 5_000);
+
+    return () => { cancelled = true; clearInterval(timer); clearTimeout(initialTimer); };
+  }, [repo, transactions, mints, safeStoreReceivedProofs, completeTransaction, _markTransactionFailed, refreshProofs]);
 
   // =========================================================================
   // Incoming P2P transfers
