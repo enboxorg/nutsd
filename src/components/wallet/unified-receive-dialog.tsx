@@ -58,6 +58,7 @@ import type { TransactionData } from '@/protocol/cashu-wallet-protocol';
 import { DialogWrapper } from '@/components/ui/dialog-wrapper';
 import { QRCodeDisplay } from '@/components/qr-code';
 import { registerActiveQuote, unregisterActiveQuote } from '@/lib/active-quotes';
+import { decideMintSettlement } from '@/lib/transaction-helpers';
 import { AmountInput } from '@/components/wallet/amount-input';
 import { ChannelSegmented, type SegmentOption } from '@/components/wallet/channel-segmented';
 
@@ -471,32 +472,25 @@ const ChannelsReceiveInner: React.FC<{
               // here would drop minted proofs (fund loss). The UI updates
               // below are guarded by mountedRef, but persistence is not.
               const fullyPersisted = await onProofsReceived(mintCtx, proofs, mintUrl);
+              const action = decideMintSettlement(fullyPersisted, 'lightning');
 
-              if (fullyPersisted) {
-                // Complete the pending transaction (or create a new one if pending write failed).
+              if (action.type === 'complete') {
                 if (pendingTxId && onTransactionCompleted) {
-                  await onTransactionCompleted(pendingTxId, { amount: amt, memo: 'Lightning receive' });
+                  await onTransactionCompleted(pendingTxId, { amount: amt, memo: action.memo });
                 } else {
                   await onTransactionCreated({
                     type: 'mint', amount: amt, unit: mintUnit, mintUrl,
-                    status: 'completed', memo: 'Lightning receive',
+                    status: 'completed', memo: action.memo,
                   });
                 }
-
-                if (mountedRef.current) {
-                  setLnReceivedAmount(amt);
-                  setLnStep('done');
-                  toastSuccess('Received!', `+${formatAmount(amt, mintUnit)}`);
-                }
               } else {
-                // Proofs stashed but DWN write incomplete — leave tx pending
-                // so stash recovery on next startup can finish the job.
-                console.warn('[nutsd] Lightning receive: proof persistence partial, deferring completion');
-                if (mountedRef.current) {
-                  setLnReceivedAmount(amt);
-                  setLnStep('done');
-                  toastSuccess('Received!', `+${formatAmount(amt, mintUnit)} (syncing…)`);
-                }
+                console.warn(`[nutsd] Lightning receive: ${action.reason}`);
+              }
+
+              if (mountedRef.current) {
+                setLnReceivedAmount(amt);
+                setLnStep('done');
+                toastSuccess('Received!', `+${formatAmount(amt, mintUnit)}${action.type === 'defer' ? ' (syncing…)' : ''}`);
               }
             } catch (err) {
               if (mountedRef.current) {
@@ -1265,31 +1259,25 @@ const LnurlWithdrawPane: React.FC<{
 
               // CRITICAL: persist proofs unconditionally (see Lightning onPaid comment).
               const fullyPersisted = await onProofsReceived(mintCtx, proofs, mintUrl);
+              const action = decideMintSettlement(fullyPersisted, 'lnurl-withdraw', withdrawInfo.description);
 
-              if (fullyPersisted) {
-                // Complete the pending transaction.
-                const memo = `LNURL withdraw${withdrawInfo.description ? `: ${withdrawInfo.description}` : ''}`;
+              if (action.type === 'complete') {
                 if (pendingTxId && onTransactionCompleted) {
-                  await onTransactionCompleted(pendingTxId, { amount: amt, memo });
+                  await onTransactionCompleted(pendingTxId, { amount: amt, memo: action.memo });
                 } else {
                   await onTransactionCreated({
                     type: 'mint', amount: amt, unit: mintUnit, mintUrl,
-                    status: 'completed', memo,
+                    status: 'completed', memo: action.memo,
                   });
                 }
-
-                if (mountedRef.current) {
-                  setReceivedAmount(amt);
-                  setStep('done');
-                  toastSuccess('Received!', `+${formatAmount(amt, mintUnit)}`);
-                }
               } else {
-                console.warn('[nutsd] LNURL withdraw: proof persistence partial, deferring completion');
-                if (mountedRef.current) {
-                  setReceivedAmount(amt);
-                  setStep('done');
-                  toastSuccess('Received!', `+${formatAmount(amt, mintUnit)} (syncing…)`);
-                }
+                console.warn(`[nutsd] LNURL withdraw: ${action.reason}`);
+              }
+
+              if (mountedRef.current) {
+                setReceivedAmount(amt);
+                setStep('done');
+                toastSuccess('Received!', `+${formatAmount(amt, mintUnit)}${action.type === 'defer' ? ' (syncing…)' : ''}`);
               }
             } catch (err) {
               if (mountedRef.current) {

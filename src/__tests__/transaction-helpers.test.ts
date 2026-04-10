@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isUnfulfilledInvoice, isExpiredInvoice } from '../lib/transaction-helpers';
+import { isUnfulfilledInvoice, isExpiredInvoice, decideMintSettlement, decideSweepAction } from '../lib/transaction-helpers';
 import type { Transaction } from '../hooks/use-wallet';
 
 function makeTx(overrides: Partial<Transaction>): Transaction {
@@ -63,5 +63,84 @@ describe('isExpiredInvoice', () => {
 
   it('returns false for non-mint types even if failed with invoice', () => {
     expect(isExpiredInvoice(makeTx({ type: 'send', status: 'failed', invoice: 'lnbc...' }))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// decideMintSettlement — dialog/sweep settlement decision
+// ---------------------------------------------------------------------------
+
+describe('decideMintSettlement', () => {
+  it('returns complete with Lightning memo when fully persisted', () => {
+    const action = decideMintSettlement(true, 'lightning');
+    expect(action).toEqual({ type: 'complete', memo: 'Lightning receive' });
+  });
+
+  it('returns complete with LNURL memo when fully persisted', () => {
+    const action = decideMintSettlement(true, 'lnurl-withdraw');
+    expect(action).toEqual({ type: 'complete', memo: 'LNURL withdraw' });
+  });
+
+  it('includes LNURL description in memo when provided', () => {
+    const action = decideMintSettlement(true, 'lnurl-withdraw', 'My Service');
+    expect(action).toEqual({ type: 'complete', memo: 'LNURL withdraw: My Service' });
+  });
+
+  it('returns defer when not fully persisted (Lightning)', () => {
+    const action = decideMintSettlement(false, 'lightning');
+    expect(action.type).toBe('defer');
+    expect((action as { type: 'defer'; reason: string }).reason).toContain('partial');
+  });
+
+  it('returns defer when not fully persisted (LNURL)', () => {
+    const action = decideMintSettlement(false, 'lnurl-withdraw', 'Service');
+    expect(action.type).toBe('defer');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// decideSweepAction — background sweep quote-state decision
+// ---------------------------------------------------------------------------
+
+describe('decideSweepAction', () => {
+  it('returns complete with stash recovery for ISSUED (Lightning)', () => {
+    const action = decideSweepAction('ISSUED', 'lightning', null);
+    expect(action).toEqual({
+      type: 'complete',
+      memo: 'Lightning receive (already minted)',
+      needsStashRecovery: true,
+    });
+  });
+
+  it('returns complete with stash recovery for ISSUED (LNURL)', () => {
+    const action = decideSweepAction('ISSUED', 'lnurl-withdraw', null);
+    expect(action).toEqual({
+      type: 'complete',
+      memo: 'LNURL withdraw (already minted)',
+      needsStashRecovery: true,
+    });
+  });
+
+  it('returns skip for PAID (caller handles settlement)', () => {
+    expect(decideSweepAction('PAID', 'lightning', null)).toEqual({ type: 'skip' });
+  });
+
+  it('returns markFailed for UNPAID with past expiry', () => {
+    const pastExpiry = Math.floor(Date.now() / 1000) - 60;
+    const action = decideSweepAction('UNPAID', 'lightning', pastExpiry);
+    expect(action).toEqual({ type: 'markFailed', memo: 'Quote expired before payment' });
+  });
+
+  it('returns skip for UNPAID with future expiry', () => {
+    const futureExpiry = Math.floor(Date.now() / 1000) + 3600;
+    expect(decideSweepAction('UNPAID', 'lightning', futureExpiry)).toEqual({ type: 'skip' });
+  });
+
+  it('returns skip for UNPAID with no expiry', () => {
+    expect(decideSweepAction('UNPAID', 'lightning', null)).toEqual({ type: 'skip' });
+  });
+
+  it('returns skip for unknown states', () => {
+    expect(decideSweepAction('UNKNOWN', 'lightning', null)).toEqual({ type: 'skip' });
   });
 });
