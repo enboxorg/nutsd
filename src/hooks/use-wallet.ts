@@ -1839,8 +1839,9 @@ export function useWallet() {
         if (isQuoteActive(state.quoteId)) continue;
 
         // ── Handle non-PAID states (no lock needed) ──
+        const sourceLabel = state.source === 'lnurl-withdraw' ? 'LNURL withdraw' : 'Lightning receive';
         if (quoteState === 'ISSUED') {
-          await completeTransaction(tx.id, { memo: 'Lightning receive (already minted)' });
+          await completeTransaction(tx.id, { memo: `${sourceLabel} (already minted)` });
           console.warn(`[nutsd] Background sweep: invoice ISSUED (already minted): ${state.quoteId}`);
           continue;
         }
@@ -1890,10 +1891,10 @@ export function useWallet() {
           );
           if (fullyPersisted) {
             const total = proofs.reduce((s, p) => s + p.amount, 0);
-            await completeTransaction(tx.id, { amount: total, memo: `Lightning receive` });
+            await completeTransaction(tx.id, { amount: total, memo: sourceLabel });
             await refreshProofs();
             toastSuccess('Payment received!', `+${formatAmount(total, mint.unit)}`);
-            console.log(`[nutsd] Background sweep settled invoice: ${total} ${mint.unit}`);
+            console.log(`[nutsd] Background sweep settled ${state.source} invoice: ${total} ${mint.unit}`);
           } else {
             // Proofs stashed but not fully written — leave pending for
             // stash recovery on next startup. Do NOT complete the tx.
@@ -1903,7 +1904,7 @@ export function useWallet() {
           // mintTokens can return ISSUED if a race slipped through — handle gracefully
           const msg = err instanceof Error ? err.message : String(err);
           if (msg.includes('already issued') || msg.includes('ISSUED')) {
-            await completeTransaction(tx.id, { memo: 'Lightning receive (already minted)' });
+            await completeTransaction(tx.id, { memo: `${sourceLabel} (already minted)` });
           }
           // Other errors: skip, try next cycle
         } finally {

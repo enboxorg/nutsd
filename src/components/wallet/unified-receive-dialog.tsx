@@ -503,17 +503,18 @@ const ChannelsReceiveInner: React.FC<{
             }
           },
           onIssued: async () => {
-            // Mark the transaction completed — tokens were already minted
-            // in another session/tab. The background sweep or next startup
-            // will reconcile proofs if needed.
+            // Tokens were already minted — another tab/session settled this
+            // invoice, or the background sweep did. Mark completed and show
+            // a success-like message rather than a scary error.
             if (pendingTxId && onTransactionCompleted) {
               await onTransactionCompleted(pendingTxId, {
-                memo: 'Lightning receive (already minted in another session)',
+                memo: 'Lightning receive (settled in another session)',
               });
             }
             if (mountedRef.current) {
-              setLnError('These tokens were already minted (possibly in another session).');
-              setLnStep('error');
+              setLnReceivedAmount(amt);
+              setLnStep('done');
+              toastSuccess('Payment already received', 'Tokens were minted in another session.');
             }
           },
           isActive: () => mountedRef.current,
@@ -1279,12 +1280,13 @@ const LnurlWithdrawPane: React.FC<{
           onIssued: async () => {
             if (pendingTxId && onTransactionCompleted) {
               await onTransactionCompleted(pendingTxId, {
-                memo: 'LNURL withdraw (already minted in another session)',
+                memo: 'LNURL withdraw (settled in another session)',
               });
             }
             if (mountedRef.current) {
-              setErrorMsg('These tokens were already minted (possibly in another session).');
-              setStep('error');
+              setReceivedAmount(amt);
+              setStep('done');
+              toastSuccess('Payment already received', 'Tokens were minted in another session.');
             }
           },
           isActive: () => mountedRef.current,
