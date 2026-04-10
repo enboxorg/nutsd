@@ -1841,6 +1841,11 @@ export function useWallet() {
         // ── Handle non-PAID states (no lock needed) ──
         const sourceLabel = state.source === 'lnurl-withdraw' ? 'LNURL withdraw' : 'Lightning receive';
         if (quoteState === 'ISSUED') {
+          // Tokens were already minted. Proofs may be fully persisted,
+          // or only in the stash (partial write). Run stash recovery to
+          // ensure proofs are in the wallet before marking completed.
+          const stashRecovered = await recoverProofStashes();
+          if (stashRecovered) await refreshProofs();
           await completeTransaction(tx.id, { memo: `${sourceLabel} (already minted)` });
           console.warn(`[nutsd] Background sweep: invoice ISSUED (already minted): ${state.quoteId}`);
           continue;
@@ -1904,6 +1909,8 @@ export function useWallet() {
           // mintTokens can return ISSUED if a race slipped through — handle gracefully
           const msg = err instanceof Error ? err.message : String(err);
           if (msg.includes('already issued') || msg.includes('ISSUED')) {
+            const stashRecovered = await recoverProofStashes();
+            if (stashRecovered) await refreshProofs();
             await completeTransaction(tx.id, { memo: `${sourceLabel} (already minted)` });
           }
           // Other errors: skip, try next cycle
@@ -1917,7 +1924,7 @@ export function useWallet() {
     const initialTimer = setTimeout(sweep, 5_000);
 
     return () => { cancelled = true; clearInterval(timer); clearTimeout(initialTimer); };
-  }, [repo, transactions, mints, safeStoreReceivedProofs, completeTransaction, _markTransactionFailed, refreshProofs]);
+  }, [repo, transactions, mints, safeStoreReceivedProofs, completeTransaction, _markTransactionFailed, recoverProofStashes, refreshProofs]);
 
   // =========================================================================
   // Incoming P2P transfers

@@ -957,19 +957,20 @@ const ClaimTokenPane: React.FC<{
       const total = newProofs.reduce((s, p) => s + p.amount, 0);
       const fullyPersisted = await onProofsReceived(known.contextId, newProofs, mintUrl);
 
-      // Only record as completed if proofs were fully written.
-      // Token is already spent at the mint either way — stash recovery
-      // will finish on next startup if persistence was partial.
-      if (fullyPersisted) {
-        await onTransactionCreated({
-          type   : 'receive',
-          amount : total,
-          unit   : known.unit ?? 'sat',
-          mintUrl,
-          status : 'completed',
-        });
-      } else {
-        console.warn('[nutsd] Token claim: proof persistence partial, deferring tx record');
+      // Always record the transaction — the token is already spent at
+      // the mint regardless of local proof persistence status. On partial
+      // persistence the stash holds the proofs and startup recovery will
+      // write them. Without a tx record the receive would be invisible.
+      await onTransactionCreated({
+        type   : 'receive',
+        amount : total,
+        unit   : known.unit ?? 'sat',
+        mintUrl,
+        status : 'completed',
+      });
+
+      if (!fullyPersisted) {
+        console.warn('[nutsd] Token claim: proof persistence partial, stash recovery will finish on restart');
       }
 
       setReceivedAmount(total);
