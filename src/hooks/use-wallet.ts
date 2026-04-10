@@ -1697,7 +1697,11 @@ export function useWallet() {
     setTransactions(prev => prev.filter(t => t.id !== txId));
   }, [repo]);
 
-  /** Mark a pending transaction as failed (e.g. expired invoice). Internal helper. */
+  /**
+   * Mark a pending transaction as failed (e.g. expired invoice).
+   * Preserves invoice and expiresAt so the expired-invoice UI can still
+   * show the expired badge and delete action.
+   */
   const _markTransactionFailed = useCallback(async (txId: string, memo: string) => {
     if (!repo) return;
     try {
@@ -1706,11 +1710,11 @@ export function useWallet() {
       if (record) {
         const data: TransactionData = await record.data.json();
         await record.update({
-          data: { ...data, status: 'failed', memo, invoice: undefined, quoteId: undefined },
+          data: { ...data, status: 'failed', memo, quoteId: undefined },
         });
         setTransactions(prev =>
           prev.map(t => t.id === txId
-            ? { ...t, status: 'failed' as const, memo, invoice: undefined, quoteId: undefined }
+            ? { ...t, status: 'failed' as const, memo, quoteId: undefined }
             : t),
         );
       }
@@ -1811,6 +1815,16 @@ export function useWallet() {
         const state = parsePendingMintState(tx.memo!);
         if (!state) continue;
 
+        // Non-blocking lock attempt: if the dialog (or another operation)
+        // holds the wallet lock, skip this invoice for now — the dialog
+        // is actively settling it.
+        let releaseLock: (() => void) | undefined;
+        try {
+          releaseLock = await acquireWalletLock('invoice-sweep');
+        } catch {
+          continue; // wallet busy — skip this cycle
+        }
+
         try {
           const result = await resumePendingMint(state);
           if (cancelled) break;
@@ -1823,17 +1837,23 @@ export function useWallet() {
                 console.warn(`[nutsd] Background sweep: unknown mint ${state.mintUrl}`);
                 break;
               }
-              await safeStoreReceivedProofs(
+              const fullyPersisted = await safeStoreReceivedProofs(
                 mint.contextId, mint.url, mint.unit,
                 result.proofs.map(p => ({
                   amount: p.amount, id: p.id, secret: p.secret, C: p.C, state: 'unspent' as const,
                 })),
               );
-              const total = result.proofs.reduce((s, p) => s + p.amount, 0);
-              await completeTransaction(tx.id, { amount: total, memo: `Lightning receive` });
-              await refreshProofs();
-              toastSuccess('Payment received!', `+${formatAmount(total, mint.unit)}`);
-              console.log(`[nutsd] Background sweep settled invoice: ${total} ${mint.unit}`);
+              if (fullyPersisted) {
+                const total = result.proofs.reduce((s, p) => s + p.amount, 0);
+                await completeTransaction(tx.id, { amount: total, memo: `Lightning receive` });
+                await refreshProofs();
+                toastSuccess('Payment received!', `+${formatAmount(total, mint.unit)}`);
+                console.log(`[nutsd] Background sweep settled invoice: ${total} ${mint.unit}`);
+              } else {
+                // Proofs stashed but not fully written — leave pending for
+                // stash recovery on next startup. Do NOT complete the tx.
+                console.warn(`[nutsd] Background sweep: proof persistence partial for ${state.quoteId}, deferring`);
+              }
               break;
             }
             case 'issued':
@@ -1851,6 +1871,8 @@ export function useWallet() {
           }
         } catch {
           // skip — mint may be offline
+        } finally {
+          releaseLock?.();
         }
       }
     };
