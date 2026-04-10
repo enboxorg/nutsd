@@ -1215,6 +1215,7 @@ const LnurlWithdrawPane: React.FC<{
         quoteId, mintUrl, mintContextId: mintCtx,
         amount: amt, unit: mintUnit,
         expiry: quoteExpiry, source: 'lnurl-withdraw',
+        description: withdrawInfo.description || undefined,
       };
       const lnurlExpiresAt = quoteExpiry
         ? new Date(quoteExpiry * 1000).toISOString()

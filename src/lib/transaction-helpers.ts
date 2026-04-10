@@ -64,13 +64,17 @@ export type SweepQuoteAction =
  * @param quoteState - The mint quote state string (PAID, ISSUED, UNPAID, etc.)
  * @param source - 'lightning' | 'lnurl-withdraw'
  * @param expiry - Unix seconds expiry, if known
+ * @param description - Optional LNURL description for memo
  */
 export function decideSweepAction(
   quoteState: string,
   source: 'lightning' | 'lnurl-withdraw',
   expiry: number | null,
+  description?: string,
 ): SweepQuoteAction {
-  const sourceLabel = source === 'lnurl-withdraw' ? 'LNURL withdraw' : 'Lightning receive';
+  const sourceLabel = source === 'lnurl-withdraw'
+    ? `LNURL withdraw${description ? `: ${description}` : ''}`
+    : 'Lightning receive';
 
   if (quoteState === 'ISSUED') {
     return {

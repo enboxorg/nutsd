@@ -121,6 +121,15 @@ describe('decideSweepAction', () => {
     });
   });
 
+  it('includes LNURL description in ISSUED memo', () => {
+    const action = decideSweepAction('ISSUED', 'lnurl-withdraw', null, 'My Service');
+    expect(action).toEqual({
+      type: 'complete',
+      memo: 'LNURL withdraw: My Service (already minted)',
+      needsStashRecovery: true,
+    });
+  });
+
   it('returns skip for PAID (caller handles settlement)', () => {
     expect(decideSweepAction('PAID', 'lightning', null)).toEqual({ type: 'skip' });
   });

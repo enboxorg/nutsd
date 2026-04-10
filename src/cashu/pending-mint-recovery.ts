@@ -40,6 +40,8 @@ export type PendingMintState = {
   expiry: number | null;
   /** Origin of the receive ('lightning' or 'lnurl-withdraw'). */
   source: 'lightning' | 'lnurl-withdraw';
+  /** LNURL-withdraw service description (for memo reconstruction). */
+  description?: string;
 };
 
 /** Marker prefix so we can quickly identify PendingMintState memos. */

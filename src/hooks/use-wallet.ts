@@ -50,7 +50,7 @@ import {
   type KeysetInfo,
 } from '@/cashu/wallet-ops';
 import { generateP2pkKeyPair, receiveP2pkLocked, type P2pkKeyPair } from '@/cashu/p2pk';
-import { recoverStashes, type RecoveryDeps } from '@/cashu/proof-stash-recovery';
+import { recoverStashes, type RecoveryDeps, type RecoveryResult } from '@/cashu/proof-stash-recovery';
 import { resumePendingSwap, type PendingSwapState } from '@/cashu/cross-mint-swap';
 import { resumePendingMint, parsePendingMintState } from '@/cashu/pending-mint-recovery';
 import { isDleqValid } from '@/cashu/dleq-verify';
@@ -1332,9 +1332,12 @@ export function useWallet() {
    * that is tested in proof-stash-recovery.test.ts), wiring DWN access as
    * injected deps. This ensures the tested code IS the production code.
    */
-  /** @returns true if any proofs were recovered (caller should re-load proofs). */
-  const recoverProofStashes = useCallback(async (): Promise<boolean> => {
-    if (!repo) return false;
+  /**
+   * @returns The full RecoveryResult, or null if repo not ready.
+   * Callers that only need a boolean can check `result.proofsRecovered > 0`.
+   */
+  const recoverProofStashes = useCallback(async (): Promise<RecoveryResult | null> => {
+    if (!repo) return null;
 
     const deps: RecoveryDeps = {
       getStashes: async () => {
@@ -1394,7 +1397,7 @@ export function useWallet() {
         `${result.stashesCompleted}/${result.stashesFound} stashes completed`,
       );
     }
-    return result.proofsRecovered > 0;
+    return result;
   }, [repo, mints, addMint, addProof]);
 
   /**
@@ -1601,12 +1604,13 @@ export function useWallet() {
   useEffect(() => {
     startupRecoveryRef.current = async (freshProofs: StoredProof[]) => {
       const stashResult = await recoverProofStashes();
+      const stashRecoveredProofs = stashResult != null && stashResult.proofsRecovered > 0;
       // Resume any pending cross-mint swaps (second leg).
       await resumePendingSwaps();
       // Resume any pending Lightning / LNURL-withdraw receives.
       const receiveResult = await resumePendingReceives();
       // If any recovery wrote new proofs, re-load.
-      const proofsForReconciliation = (stashResult || receiveResult)
+      const proofsForReconciliation = (stashRecoveredProofs || receiveResult)
         ? await refreshProofs()
         : freshProofs;
       await reconcilePendingProofs(proofsForReconciliation);
@@ -1841,14 +1845,20 @@ export function useWallet() {
 
         // ── Handle non-PAID states (no lock needed) ──
         const source: 'lightning' | 'lnurl-withdraw' = state.source === 'lnurl-withdraw' ? 'lnurl-withdraw' : 'lightning';
-        const sweepAction = decideSweepAction(quoteState, source, state.expiry);
+        const sweepAction = decideSweepAction(quoteState, source, state.expiry, state.description);
 
         if (sweepAction.type === 'complete') {
           // ISSUED — tokens already minted. Run stash recovery to ensure
           // proofs are in the wallet before marking completed.
           if (sweepAction.needsStashRecovery) {
-            const stashRecovered = await recoverProofStashes();
-            if (stashRecovered) await refreshProofs();
+            const stashResult = await recoverProofStashes();
+            if (stashResult && stashResult.proofsRecovered > 0) await refreshProofs();
+            // Only complete if recovery had no failures. If proofs are
+            // still missing (failed writes), leave pending for next cycle.
+            if (stashResult && stashResult.proofsFailed > 0) {
+              console.warn(`[nutsd] Background sweep: stash recovery incomplete for ${state.quoteId}, deferring`);
+              continue;
+            }
           }
           await completeTransaction(tx.id, { memo: sweepAction.memo });
           console.warn(`[nutsd] Background sweep: invoice ISSUED: ${state.quoteId}`);
@@ -1891,7 +1901,7 @@ export function useWallet() {
               amount: p.amount, id: p.id, secret: p.secret, C: p.C, state: 'unspent' as const,
             })),
           );
-          const mintAction = decideMintSettlement(fullyPersisted, source);
+          const mintAction = decideMintSettlement(fullyPersisted, source, state.description);
           if (mintAction.type === 'complete') {
             const total = proofs.reduce((s, p) => s + p.amount, 0);
             await completeTransaction(tx.id, { amount: total, memo: mintAction.memo });
@@ -1905,9 +1915,11 @@ export function useWallet() {
           // mintTokens can return ISSUED if a race slipped through
           const msg = err instanceof Error ? err.message : String(err);
           if (msg.includes('already issued') || msg.includes('ISSUED')) {
-            const stashRecovered = await recoverProofStashes();
-            if (stashRecovered) await refreshProofs();
-            const issuedAction = decideSweepAction('ISSUED', source, state.expiry);
+            const stashResult = await recoverProofStashes();
+            if (stashResult && stashResult.proofsRecovered > 0) await refreshProofs();
+            // Only complete if stash recovery had no failures
+            if (stashResult && stashResult.proofsFailed > 0) break; // defer to next cycle
+            const issuedAction = decideSweepAction('ISSUED', source, state.expiry, state.description);
             if (issuedAction.type === 'complete') {
               await completeTransaction(tx.id, { memo: issuedAction.memo });
             }
