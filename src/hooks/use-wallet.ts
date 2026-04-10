@@ -41,6 +41,8 @@ import type { TransferData } from '@/protocol/cashu-transfer-protocol';
 import type { Proof } from '@cashu/cashu-ts';
 import {
   groupProofsByState,
+  checkMintQuote,
+  mintTokens,
   getKeysetInfos,
   getMintInfo,
   clearWalletCache,
@@ -51,7 +53,8 @@ import { generateP2pkKeyPair, receiveP2pkLocked, type P2pkKeyPair } from '@/cash
 import { recoverStashes, type RecoveryDeps } from '@/cashu/proof-stash-recovery';
 import { resumePendingSwap, type PendingSwapState } from '@/cashu/cross-mint-swap';
 import { resumePendingMint, parsePendingMintState } from '@/cashu/pending-mint-recovery';
-import { acquireWalletLock } from '@/lib/wallet-mutex';
+import { acquireWalletLock, tryAcquireWalletLock } from '@/lib/wallet-mutex';
+import { isQuoteActive } from '@/lib/active-quotes';
 import { formatAmount, toastSuccess } from '@/lib/utils';
 
 // ---------------------------------------------------------------------------
@@ -1815,64 +1818,85 @@ export function useWallet() {
         const state = parsePendingMintState(tx.memo!);
         if (!state) continue;
 
-        // Non-blocking lock attempt: if the dialog (or another operation)
-        // holds the wallet lock, skip this invoice for now — the dialog
-        // is actively settling it.
-        let releaseLock: (() => void) | undefined;
+        // Skip if a dialog is actively monitoring this quote.
+        if (isQuoteActive(state.quoteId)) continue;
+
+        // ── Check phase (no lock, no mutation) ──
+        // Only a network round-trip to see the quote status. Does not
+        // block other wallet operations or trigger the unload guard.
+        let quoteState: string;
         try {
-          releaseLock = await acquireWalletLock('invoice-sweep');
+          const quote = await checkMintQuote(state.mintUrl, state.quoteId, state.unit);
+          quoteState = quote.state as string;
         } catch {
-          continue; // wallet busy — skip this cycle
+          continue; // mint may be offline — try next cycle
+        }
+        if (cancelled) break;
+
+        // Re-check: a dialog may have opened since the network call.
+        if (isQuoteActive(state.quoteId)) continue;
+
+        // ── Handle non-PAID states (no lock needed) ──
+        if (quoteState === 'ISSUED') {
+          await completeTransaction(tx.id, { memo: 'Lightning receive (already minted)' });
+          console.warn(`[nutsd] Background sweep: invoice ISSUED (already minted): ${state.quoteId}`);
+          continue;
+        }
+        if (quoteState !== 'PAID') {
+          // UNPAID: check expiry
+          const expiry = state.expiry;
+          if (expiry && expiry < Math.floor(Date.now() / 1000)) {
+            await _markTransactionFailed(tx.id, 'Quote expired before payment');
+          }
+          continue;
         }
 
+        // ── Settlement phase (PAID — needs wallet lock) ──
+        // Use tryAcquire so we never block behind a dialog or other operation.
+        const releaseLock = tryAcquireWalletLock('invoice-sweep');
+        if (!releaseLock) continue; // lock held — dialog or other op will handle it
+
         try {
-          const result = await resumePendingMint(state);
+          // Final guard: re-check the active set after acquiring the lock.
+          // A dialog could have started between our check and lock acquisition.
+          if (isQuoteActive(state.quoteId)) continue;
+
+          const mint = mints.find(m => m.contextId === state.mintContextId)
+            ?? mints.find(m => m.url === state.mintUrl);
+          if (!mint) {
+            console.warn(`[nutsd] Background sweep: unknown mint ${state.mintUrl}`);
+            continue;
+          }
+
+          const proofs = await mintTokens(state.mintUrl, state.amount, state.quoteId, state.unit);
           if (cancelled) break;
 
-          switch (result.status) {
-            case 'minted': {
-              const mint = mints.find(m => m.contextId === state.mintContextId)
-                ?? mints.find(m => m.url === state.mintUrl);
-              if (!mint) {
-                console.warn(`[nutsd] Background sweep: unknown mint ${state.mintUrl}`);
-                break;
-              }
-              const fullyPersisted = await safeStoreReceivedProofs(
-                mint.contextId, mint.url, mint.unit,
-                result.proofs.map(p => ({
-                  amount: p.amount, id: p.id, secret: p.secret, C: p.C, state: 'unspent' as const,
-                })),
-              );
-              if (fullyPersisted) {
-                const total = result.proofs.reduce((s, p) => s + p.amount, 0);
-                await completeTransaction(tx.id, { amount: total, memo: `Lightning receive` });
-                await refreshProofs();
-                toastSuccess('Payment received!', `+${formatAmount(total, mint.unit)}`);
-                console.log(`[nutsd] Background sweep settled invoice: ${total} ${mint.unit}`);
-              } else {
-                // Proofs stashed but not fully written — leave pending for
-                // stash recovery on next startup. Do NOT complete the tx.
-                console.warn(`[nutsd] Background sweep: proof persistence partial for ${state.quoteId}, deferring`);
-              }
-              break;
-            }
-            case 'issued':
-              await completeTransaction(tx.id, { memo: 'Lightning receive (already minted)' });
-              console.warn(`[nutsd] Background sweep: invoice ISSUED (already minted): ${state.quoteId}`);
-              break;
-            case 'expired':
-              // Update status so UI shows it as failed
-              await _markTransactionFailed(tx.id, 'Quote expired before payment');
-              break;
-            case 'pending':
-              break; // still waiting
-            case 'error':
-              break; // skip, try again next sweep
+          const fullyPersisted = await safeStoreReceivedProofs(
+            mint.contextId, mint.url, mint.unit,
+            proofs.map(p => ({
+              amount: p.amount, id: p.id, secret: p.secret, C: p.C, state: 'unspent' as const,
+            })),
+          );
+          if (fullyPersisted) {
+            const total = proofs.reduce((s, p) => s + p.amount, 0);
+            await completeTransaction(tx.id, { amount: total, memo: `Lightning receive` });
+            await refreshProofs();
+            toastSuccess('Payment received!', `+${formatAmount(total, mint.unit)}`);
+            console.log(`[nutsd] Background sweep settled invoice: ${total} ${mint.unit}`);
+          } else {
+            // Proofs stashed but not fully written — leave pending for
+            // stash recovery on next startup. Do NOT complete the tx.
+            console.warn(`[nutsd] Background sweep: proof persistence partial for ${state.quoteId}, deferring`);
           }
-        } catch {
-          // skip — mint may be offline
+        } catch (err) {
+          // mintTokens can return ISSUED if a race slipped through — handle gracefully
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes('already issued') || msg.includes('ISSUED')) {
+            await completeTransaction(tx.id, { memo: 'Lightning receive (already minted)' });
+          }
+          // Other errors: skip, try next cycle
         } finally {
-          releaseLock?.();
+          releaseLock();
         }
       }
     };

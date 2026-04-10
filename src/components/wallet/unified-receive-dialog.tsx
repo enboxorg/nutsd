@@ -57,6 +57,7 @@ import type { TransactionData } from '@/protocol/cashu-wallet-protocol';
 
 import { DialogWrapper } from '@/components/ui/dialog-wrapper';
 import { QRCodeDisplay } from '@/components/qr-code';
+import { registerActiveQuote, unregisterActiveQuote } from '@/lib/active-quotes';
 import { AmountInput } from '@/components/wallet/amount-input';
 import { ChannelSegmented, type SegmentOption } from '@/components/wallet/channel-segmented';
 
@@ -408,6 +409,7 @@ const ChannelsReceiveInner: React.FC<{
 
     setLnLoading(true);
     setLnError('');
+    let registeredQuoteId: string | undefined;
     try {
       const quote = await createMintQuote(selectedMint.url, n, selectedMint.unit);
       if (!mountedRef.current) return;
@@ -445,24 +447,29 @@ const ChannelsReceiveInner: React.FC<{
       setLnInvoice(quote.request);
       setLnStep('invoice');
 
-      stopPollingRef.current = subscribeToQuote({
+      // Register this quote so the background sweep skips it while we're monitoring.
+      registerActiveQuote(quoteId);
+      registeredQuoteId = quoteId;
+      const stopSubscription = subscribeToQuote({
         mintUrl,
         quoteId,
         quoteType : 'bolt11_mint_quote',
         callbacks : {
           onPaid: async () => {
-            if (!mountedRef.current) return;
-            setLnStep('waiting');
+            if (mountedRef.current) setLnStep('waiting');
             let releaseLock: (() => void) | undefined;
             try {
               releaseLock = await acquireWalletLock('mint');
               const proofs = await mintTokens(mintUrl, amt, quoteId, mintUnit);
-              if (!mountedRef.current) return;
 
               if (!(await isDleqValid(mintUrl, proofs))) {
                 console.warn('[nutsd:financial] DLEQ verification failed on minted proofs');
               }
 
+              // CRITICAL: persist proofs unconditionally — even if the
+              // dialog unmounted while we awaited mintTokens/lock. Bailing
+              // here would drop minted proofs (fund loss). The UI updates
+              // below are guarded by mountedRef, but persistence is not.
               await onProofsReceived(mintCtx, proofs, mintUrl);
 
               // Complete the pending transaction (or create a new one if pending write failed).
@@ -517,7 +524,16 @@ const ChannelsReceiveInner: React.FC<{
         })),
         expiry: quoteExpiry,
       });
+      stopPollingRef.current = () => {
+        unregisterActiveQuote(quoteId);
+        stopSubscription();
+      };
     } catch (err) {
+      // Clean up active-quote registration if we registered but didn't
+      // reach the stopPollingRef assignment (which owns the cleanup).
+      if (registeredQuoteId && !stopPollingRef.current) {
+        unregisterActiveQuote(registeredQuoteId);
+      }
       toastError('Failed to create invoice', err);
       setLnError(err instanceof Error ? err.message : String(err));
       setLnStep('error');
@@ -1166,6 +1182,7 @@ const LnurlWithdrawPane: React.FC<{
     const mintUrl = selectedMint.url;
     const mintUnit = 'sat'; // LNURL-withdraw is always sats
     const mintCtx = selectedMint.contextId;
+    let registeredQuoteId: string | undefined;
 
     try {
       // Step 1: Create a mint quote (Lightning invoice) at our mint.
@@ -1206,23 +1223,26 @@ const LnurlWithdrawPane: React.FC<{
       // Step 4: Wait for payment. The wallet lock is NOT held here —
       // only acquired briefly inside onPaid for the mint/store critical
       // section (same pattern as Lightning receive).
-      stopPollingRef.current = subscribeToQuote({
+      registerActiveQuote(quoteId);
+      registeredQuoteId = quoteId;
+      const stopLnurlSubscription = subscribeToQuote({
         mintUrl,
         quoteId,
         quoteType: 'bolt11_mint_quote',
         callbacks: {
           onPaid: async () => {
-            if (!mountedRef.current) return;
+            // Note: step is already 'waiting'. Do NOT bail on !mountedRef —
+            // proofs must be persisted even if the dialog was dismissed.
             let releaseLock: (() => void) | undefined;
             try {
               releaseLock = await acquireWalletLock('lnurl-withdraw-mint');
               const proofs = await mintTokens(mintUrl, amt, quoteId, mintUnit);
-              if (!mountedRef.current) return;
 
               if (!(await isDleqValid(mintUrl, proofs))) {
                 console.warn('[nutsd:financial] DLEQ verification failed on LNURL-withdraw proofs');
               }
 
+              // CRITICAL: persist proofs unconditionally (see Lightning onPaid comment).
               await onProofsReceived(mintCtx, proofs, mintUrl);
 
               // Complete the pending transaction.
@@ -1275,9 +1295,18 @@ const LnurlWithdrawPane: React.FC<{
         })),
         expiry: quoteExpiry,
       });
+      stopPollingRef.current = () => {
+        unregisterActiveQuote(quoteId);
+        stopLnurlSubscription();
+      };
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : String(err));
-      setStep('error');
+      if (registeredQuoteId && !stopPollingRef.current) {
+        unregisterActiveQuote(registeredQuoteId);
+      }
+      if (mountedRef.current) {
+        setErrorMsg(err instanceof Error ? err.message : String(err));
+        setStep('error');
+      }
     }
   };
 

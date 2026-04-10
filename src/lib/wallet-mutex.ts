@@ -79,6 +79,21 @@ export async function acquireWalletLock(
 }
 
 /**
+ * Try to acquire the wallet lock without waiting.
+ *
+ * Returns a release function if the lock was free, or `null` if it's
+ * currently held. Unlike `acquireWalletLock`, this never queues —
+ * callers should skip or retry later.
+ */
+export function tryAcquireWalletLock(operation: string): (() => void) | null {
+  if (locked) return null;
+  locked = true;
+  lockHolder = operation;
+  installBeforeUnload();
+  return createRelease(operation);
+}
+
+/**
  * Check if the wallet lock is currently held.
  */
 export function isWalletLocked(): boolean {
