@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { acquireWalletLock, isWalletLocked, getWalletLockHolder, _resetMutex } from '../lib/wallet-mutex';
+import { acquireWalletLock, tryAcquireWalletLock, isWalletLocked, getWalletLockHolder, _resetMutex } from '../lib/wallet-mutex';
 
 describe('wallet-mutex', () => {
   beforeEach(() => {
@@ -59,5 +59,44 @@ describe('wallet-mutex', () => {
     expect(getWalletLockHolder()).toBe('melt-operation');
     release();
     expect(getWalletLockHolder()).toBe(null);
+  });
+
+  describe('tryAcquireWalletLock', () => {
+    it('acquires lock when free', () => {
+      const release = tryAcquireWalletLock('try-op');
+      expect(release).not.toBeNull();
+      expect(isWalletLocked()).toBe(true);
+      expect(getWalletLockHolder()).toBe('try-op');
+      release!();
+      expect(isWalletLocked()).toBe(false);
+    });
+
+    it('returns null when lock is held', async () => {
+      const release = await acquireWalletLock('blocker');
+      const result = tryAcquireWalletLock('try-op');
+      expect(result).toBeNull();
+      expect(getWalletLockHolder()).toBe('blocker');
+      release();
+    });
+
+    it('does not jump the wait queue', async () => {
+      const release1 = await acquireWalletLock('op1');
+
+      // Queue a waiter
+      const p2 = acquireWalletLock('op2', 5000);
+
+      // tryAcquire should fail — lock held by op1
+      expect(tryAcquireWalletLock('try-op')).toBeNull();
+
+      // Release op1 — op2 should get the lock, not a future tryAcquire
+      release1();
+      const release2 = await p2;
+      expect(getWalletLockHolder()).toBe('op2');
+
+      // tryAcquire should still fail — lock held by op2
+      expect(tryAcquireWalletLock('try-op')).toBeNull();
+
+      release2();
+    });
   });
 });

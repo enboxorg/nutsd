@@ -1,35 +1,19 @@
-import { useState, useMemo } from 'react';
-import {
-  ArrowUpIcon, ArrowDownIcon, SendIcon, DownloadIcon,
-  RefreshCwIcon, UsersIcon, XIcon, SearchIcon, FilterIcon,
-} from 'lucide-react';
-import { formatAmount, formatDate, truncateMintUrl } from '@/lib/utils';
+import { useState, useEffect, useMemo } from 'react';
+import { XIcon, SearchIcon, FilterIcon } from 'lucide-react';
+import { truncateMintUrl } from '@/lib/utils';
+import { TransactionRow } from '@/components/wallet/transaction-list-card';
+import { isUnfulfilledInvoice } from '@/lib/transaction-helpers';
 import type { Transaction, Mint } from '@/hooks/use-wallet';
 
 interface TransactionHistoryProps {
   transactions: Transaction[];
   mints: Mint[];
   onClose: () => void;
+  onCheckTokenSpent?: (tx: Transaction) => Promise<boolean | null>;
+  onReclaimToken?: (tx: Transaction) => Promise<void>;
+  onShowInvoiceQr?: (tx: Transaction) => void;
+  onDeleteTransaction?: (tx: Transaction) => Promise<void>;
 }
-
-const TX_ICONS: Record<string, React.FC<{ className?: string }>> = {
-  'mint': ArrowDownIcon, 'melt': ArrowUpIcon, 'send': SendIcon,
-  'receive': DownloadIcon, 'swap': RefreshCwIcon,
-  'p2p-send': UsersIcon, 'p2p-receive': UsersIcon,
-};
-
-const TX_LABELS: Record<string, string> = {
-  'mint': 'Deposit', 'melt': 'Withdraw', 'send': 'Sent',
-  'receive': 'Received', 'swap': 'Swap',
-  'p2p-send': 'Sent to DID', 'p2p-receive': 'Received from DID',
-};
-
-const TX_COLORS: Record<string, string> = {
-  'mint': 'text-[var(--color-success)]', 'melt': 'text-[var(--color-warning)]',
-  'send': 'text-primary', 'receive': 'text-[var(--color-info)]',
-  'swap': 'text-muted-foreground',
-  'p2p-send': 'text-primary', 'p2p-receive': 'text-[var(--color-info)]',
-};
 
 const PAGE_SIZE = 25;
 
@@ -45,6 +29,10 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
   transactions,
   mints,
   onClose,
+  onCheckTokenSpent,
+  onReclaimToken,
+  onShowInvoiceQr,
+  onDeleteTransaction,
 }) => {
   const [typeFilter, setTypeFilter] = useState('all');
   const [mintFilter, setMintFilter] = useState('all');
@@ -72,8 +60,30 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
     return result;
   }, [transactions, typeFilter, mintFilter, search]);
 
-  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
-  const pageItems = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+
+  // Clamp page when the filtered list shrinks (e.g. after deleting an item).
+  useEffect(() => {
+    setPage(p => Math.min(p, totalPages - 1));
+  }, [totalPages]);
+
+  const safePage = Math.min(page, totalPages - 1);
+  const pageItems = filtered.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
+
+  // Re-render when the nearest pending invoice on the current page expires.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const now = Date.now();
+    const nextExpiry = pageItems.reduce<number | null>((earliest, tx) => {
+      if (!isUnfulfilledInvoice(tx) || !tx.expiresAt || tx.status === 'failed') return earliest;
+      const exp = new Date(tx.expiresAt).getTime();
+      if (exp <= now) return earliest;
+      return earliest === null ? exp : Math.min(earliest, exp);
+    }, null);
+    if (nextExpiry === null) return;
+    const timer = setTimeout(() => setTick(t => t + 1), nextExpiry - now + 500);
+    return () => clearTimeout(timer);
+  }, [pageItems]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -143,33 +153,17 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
             <div className="p-6 text-center text-xs text-muted-foreground">
               No transactions match your filters.
             </div>
-          ) : pageItems.map(tx => {
-            const Icon = TX_ICONS[tx.type] ?? RefreshCwIcon;
-            const label = TX_LABELS[tx.type] ?? tx.type;
-            const color = TX_COLORS[tx.type] ?? 'text-muted-foreground';
-            const isIncoming = ['mint', 'receive', 'p2p-receive'].includes(tx.type);
-            const sign = isIncoming ? '+' : '-';
-
-            return (
-              <div key={tx.id} className="flex items-center justify-between px-4 py-3">
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className={`p-1.5 rounded-md bg-muted ${color}`}>
-                    <Icon className="h-3.5 w-3.5" />
-                  </div>
-                  <div className="min-w-0">
-                    <span className="text-sm font-medium">{label}</span>
-                    {tx.memo && <p className="text-xs text-muted-foreground truncate">{tx.memo}</p>}
-                    <div className="text-xs text-muted-foreground">
-                      {truncateMintUrl(tx.mintUrl)} &middot; {formatDate(tx.createdAt)}
-                    </div>
-                  </div>
-                </div>
-                <div className={`amount-display text-sm font-medium shrink-0 ml-3 ${isIncoming ? 'text-[var(--color-success)]' : 'text-foreground'}`}>
-                  {sign}{formatAmount(tx.amount, tx.unit)}
-                </div>
-              </div>
-            );
-          })}
+          ) : pageItems.map(tx => (
+            <TransactionRow
+              key={tx.id}
+              tx={tx}
+              expanded
+              onCheckSpent={onCheckTokenSpent}
+              onReclaimToken={onReclaimToken}
+              onShowInvoiceQr={onShowInvoiceQr}
+              onDeleteTransaction={onDeleteTransaction}
+            />
+          ))}
         </div>
 
         {/* Pagination */}
@@ -177,17 +171,17 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
           <div className="flex items-center justify-between pt-2">
             <button
               onClick={() => setPage(p => Math.max(0, p - 1))}
-              disabled={page === 0}
+              disabled={safePage === 0}
               className="px-3 py-1.5 rounded-lg border border-border text-xs hover:bg-muted disabled:opacity-50 transition-colors"
             >
               Previous
             </button>
             <span className="text-xs text-muted-foreground">
-              Page {page + 1} of {totalPages}
+              Page {safePage + 1} of {totalPages}
             </span>
             <button
               onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
-              disabled={page >= totalPages - 1}
+              disabled={safePage >= totalPages - 1}
               className="px-3 py-1.5 rounded-lg border border-border text-xs hover:bg-muted disabled:opacity-50 transition-colors"
             >
               Next

@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 
 import { ThemeProvider, useTheme } from '@/components/theme-provider';
 import { ErrorBoundary } from '@/components/error-boundary';
@@ -26,6 +26,8 @@ import { Toaster } from 'sonner';
 import { receiveToken, getMintInfo, checkTokenSpent } from '@/cashu/wallet-ops';
 import { executeCrossMintSwap } from '@/cashu/cross-mint-swap';
 import { acquireWalletLock } from '@/lib/wallet-mutex';
+import { QRCodeDisplay } from '@/components/qr-code';
+import { DialogWrapper } from '@/components/ui/dialog-wrapper';
 
 import { toastError, toastSuccess, formatAmount, truncateMintUrl, truncateMiddle } from '@/lib/utils';
 import { brand } from '@/lib/brand';
@@ -40,9 +42,93 @@ import {
   MoonIcon,
   SunIcon,
   AlertTriangleIcon,
+  CheckIcon,
+  CopyIcon,
+  XIcon,
   DownloadIcon,
   SettingsIcon,
 } from 'lucide-react';
+
+// ---------------------------------------------------------------------------
+// Invoice QR dialog — for re-displaying a pending invoice from activity
+// ---------------------------------------------------------------------------
+
+function InvoiceQrDialog({ invoice, amount, unit, expiresAt, onClose }: {
+  invoice: string;
+  amount: number;
+  unit: string;
+  expiresAt?: string;
+  onClose: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [expired, setExpired] = useState(
+    () => !!expiresAt && new Date(expiresAt).getTime() < Date.now(),
+  );
+
+  // Auto-close when the invoice expires while the dialog is open.
+  useEffect(() => {
+    if (!expiresAt || expired) return;
+    const ms = new Date(expiresAt).getTime() - Date.now();
+    if (ms <= 0) { setExpired(true); return; }
+    const timer = setTimeout(() => setExpired(true), ms);
+    return () => clearTimeout(timer);
+  }, [expiresAt, expired]);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(invoice);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toastError('Copy failed', new Error('Clipboard access denied'));
+    }
+  };
+
+  return (
+    <DialogWrapper open={true} onClose={onClose}>
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-semibold">{expired ? 'Invoice Expired' : 'Pending Invoice'}</h3>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
+            <XIcon className="h-4 w-4" />
+          </button>
+        </div>
+        {expired ? (
+          <div className="flex flex-col items-center py-6 gap-3">
+            <AlertTriangleIcon className="h-10 w-10 text-muted-foreground" />
+            <p className="text-sm text-muted-foreground text-center">
+              This invoice has expired and can no longer be paid.
+            </p>
+            <button
+              onClick={onClose}
+              className="px-6 py-2.5 rounded-full bg-primary text-primary-foreground text-sm font-medium"
+            >
+              Close
+            </button>
+          </div>
+        ) : (
+          <>
+            <p className="text-xs text-muted-foreground text-center">
+              Waiting for <span className="font-medium text-foreground">{formatAmount(amount, unit)}</span> payment
+            </p>
+            <div className="flex justify-center">
+              <div className="p-4 rounded-2xl bg-white">
+                <QRCodeDisplay value={invoice} size={200} />
+              </div>
+            </div>
+            <button
+              onClick={handleCopy}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-full border border-border text-sm font-medium hover:bg-muted transition-colors"
+            >
+              {copied ? <CheckIcon className="h-4 w-4" /> : <CopyIcon className="h-4 w-4" />}
+              {copied ? 'Copied' : 'Copy Invoice'}
+            </button>
+          </>
+        )}
+      </div>
+    </DialogWrapper>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Wallet app (connected)
@@ -80,6 +166,7 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
     deleteProofs,
     addTransaction,
     completeTransaction,
+    deleteTransaction,
     markTransactionClaimed,
     getUnspentProofsForMint,
     getUnspentProofsByContext,
@@ -136,7 +223,7 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
    * stash write and cleanup, `recoverProofStashes()` on next startup fills
    * in any missing proofs from the stash.
    */
-  const storeNewProofs = useCallback(async (mintContextId: string, cashuProofs: Proof[]) => {
+  const storeNewProofs = useCallback(async (mintContextId: string, cashuProofs: Proof[]): Promise<boolean> => {
     const mint = mints.find(m => m.contextId === mintContextId);
     const proofDataList: ProofData[] = cashuProofs.map(proof => {
       const data: ProofData = {
@@ -160,7 +247,7 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
       }
       return data;
     });
-    await safeStoreReceivedProofs(
+    return safeStoreReceivedProofs(
       mintContextId,
       mint?.url ?? '',
       mint?.unit ?? 'sat',
@@ -173,7 +260,7 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
     mintContextId: string,
     cashuProofs: Proof[],
     mintUrl: string,
-  ) => {
+  ): Promise<boolean> => {
     let ctx = mintContextId;
     if (!ctx) {
       const knownMint = mints.find(m => m.url === mintUrl);
@@ -185,7 +272,7 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
       }
     }
     if (!ctx) throw new Error(`Could not resolve mint context for ${mintUrl}`);
-    await storeNewProofs(ctx, cashuProofs);
+    return storeNewProofs(ctx, cashuProofs);
   }, [mints, addMint, storeNewProofs]);
 
   /**
@@ -348,6 +435,23 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
     }
     return isSpent;
   }, [markTransactionClaimed]);
+
+  /** Delete a transaction (only allowed for expired pending/failed invoices). */
+  const handleDeleteTransaction = useCallback(async (tx: Transaction) => {
+    const isExpiredPending = tx.status === 'pending' && tx.expiresAt && new Date(tx.expiresAt).getTime() < Date.now();
+    const isFailedInvoice = tx.status === 'failed' && tx.type === 'mint' && !!tx.invoice;
+    if (!isExpiredPending && !isFailedInvoice) return;
+    await deleteTransaction(tx.id);
+    toastSuccess('Invoice removed');
+  }, [deleteTransaction]);
+
+  /** Show the QR code for a pending invoice. */
+  const [invoiceQrTx, setInvoiceQrTx] = useState<{ invoice: string; amount: number; unit: string; expiresAt?: string } | null>(null);
+  const handleShowInvoiceQr = useCallback((tx: Transaction) => {
+    if (!tx.invoice) return;
+    // Allow opening even if expired — the dialog itself shows the expired state.
+    setInvoiceQrTx({ invoice: tx.invoice, amount: tx.amount, unit: tx.unit, expiresAt: tx.expiresAt });
+  }, []);
 
   // ── Unified dialog switchers ──
 
@@ -578,6 +682,8 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
               onViewAll={() => setShowHistory(true)}
               onCheckTokenSpent={handleCheckTokenSpent}
               onReclaimToken={handleReclaimToken}
+              onShowInvoiceQr={handleShowInvoiceQr}
+              onDeleteTransaction={handleDeleteTransaction}
             />
           </>
         )}
@@ -641,6 +747,10 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
           transactions={transactions}
           mints={mints}
           onClose={() => setShowHistory(false)}
+          onCheckTokenSpent={handleCheckTokenSpent}
+          onReclaimToken={handleReclaimToken}
+          onShowInvoiceQr={handleShowInvoiceQr}
+          onDeleteTransaction={handleDeleteTransaction}
         />
       )}
       {showSettings && (
@@ -655,6 +765,15 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
           onRemovePin={onRemovePin}
           onUpdatePreferences={updatePreferences}
           onClose={() => setShowSettings(false)}
+        />
+      )}
+      {invoiceQrTx && (
+        <InvoiceQrDialog
+          invoice={invoiceQrTx.invoice}
+          amount={invoiceQrTx.amount}
+          unit={invoiceQrTx.unit}
+          expiresAt={invoiceQrTx.expiresAt}
+          onClose={() => setInvoiceQrTx(null)}
         />
       )}
       {trustMintState && (

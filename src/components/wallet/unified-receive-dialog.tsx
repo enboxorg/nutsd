@@ -57,6 +57,8 @@ import type { TransactionData } from '@/protocol/cashu-wallet-protocol';
 
 import { DialogWrapper } from '@/components/ui/dialog-wrapper';
 import { QRCodeDisplay } from '@/components/qr-code';
+import { registerActiveQuote, unregisterActiveQuote } from '@/lib/active-quotes';
+import { decideMintSettlement } from '@/lib/transaction-helpers';
 import { AmountInput } from '@/components/wallet/amount-input';
 import { ChannelSegmented, type SegmentOption } from '@/components/wallet/channel-segmented';
 
@@ -119,7 +121,7 @@ export interface UnifiedReceiveDialogProps {
   onUnknownMint?: (mintUrl: string, amount: number, unit: string, token: string) => void;
 
   onClose: () => void;
-  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
+  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<boolean>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
   /** Update a pending transaction to completed (used for recovery-safe receive flows). */
   onTransactionCompleted?: (txId: string, opts?: { amount?: number; memo?: string }) => Promise<void>;
@@ -202,7 +204,7 @@ const ChannelsReceive: React.FC<{
   mintHealth?: Map<string, boolean>;
   did?: string;
   onClose: () => void;
-  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
+  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<boolean>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
   onTransactionCompleted?: (txId: string, opts?: { amount?: number; memo?: string }) => Promise<void>;
 }> = ({ mints, mintHealth, did, onClose, onProofsReceived, onTransactionCreated, onTransactionCompleted }) => {
@@ -292,7 +294,7 @@ const ChannelsReceiveInner: React.FC<{
   onCameraToggle: (active: boolean) => void;
   onScanOrPaste: (raw: string) => void;
   onClose: () => void;
-  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
+  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<boolean>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
   onTransactionCompleted?: (txId: string, opts?: { amount?: number; memo?: string }) => Promise<void>;
 }> = ({ mints, mintHealth, did, cameraActive, resolving, onCameraToggle, onScanOrPaste, onClose, onProofsReceived, onTransactionCreated, onTransactionCompleted }) => {
@@ -408,11 +410,10 @@ const ChannelsReceiveInner: React.FC<{
 
     setLnLoading(true);
     setLnError('');
+    let registeredQuoteId: string | undefined;
     try {
       const quote = await createMintQuote(selectedMint.url, n, selectedMint.unit);
       if (!mountedRef.current) return;
-      setLnInvoice(quote.request);
-      setLnStep('invoice');
 
       // Capture values in closure; the state object may change by the time callbacks fire.
       const mintUrl = selectedMint.url;
@@ -422,52 +423,74 @@ const ChannelsReceiveInner: React.FC<{
       const quoteExpiry = quote.expiry ?? null;
       const amt = n;
 
-      // Persist pending state so a page refresh can resume.
+      // IMPORTANT: Persist the pending transaction BEFORE showing the QR.
+      // This ensures the recovery record exists in DWN before the invoice
+      // can be copied/shared. A crash or tab close after this point is safe.
       const pendingState: PendingMintState = {
         quoteId, mintUrl, mintContextId: mintCtx,
         amount: amt, unit: mintUnit,
         expiry: quoteExpiry, source: 'lightning',
       };
+      const expiresAt = quoteExpiry
+        ? new Date(quoteExpiry * 1000).toISOString()
+        : undefined;
       const pendingTxId = await onTransactionCreated({
         type: 'mint', amount: amt, unit: mintUnit, mintUrl,
         status: 'pending',
         memo: serializePendingMintState(pendingState),
+        invoice: quote.request,
+        quoteId,
+        expiresAt,
       });
+      if (!mountedRef.current) return;
 
-      stopPollingRef.current = subscribeToQuote({
+      // Now safe to show the QR — the recovery record is durable.
+      setLnInvoice(quote.request);
+      setLnStep('invoice');
+
+      // Register this quote so the background sweep skips it while we're monitoring.
+      registerActiveQuote(quoteId);
+      registeredQuoteId = quoteId;
+      const stopSubscription = subscribeToQuote({
         mintUrl,
         quoteId,
         quoteType : 'bolt11_mint_quote',
         callbacks : {
           onPaid: async () => {
-            if (!mountedRef.current) return;
-            setLnStep('waiting');
+            if (mountedRef.current) setLnStep('waiting');
             let releaseLock: (() => void) | undefined;
             try {
               releaseLock = await acquireWalletLock('mint');
               const proofs = await mintTokens(mintUrl, amt, quoteId, mintUnit);
-              if (!mountedRef.current) return;
 
               if (!(await isDleqValid(mintUrl, proofs))) {
                 console.warn('[nutsd:financial] DLEQ verification failed on minted proofs');
               }
 
-              await onProofsReceived(mintCtx, proofs, mintUrl);
+              // CRITICAL: persist proofs unconditionally — even if the
+              // dialog unmounted while we awaited mintTokens/lock. Bailing
+              // here would drop minted proofs (fund loss). The UI updates
+              // below are guarded by mountedRef, but persistence is not.
+              const fullyPersisted = await onProofsReceived(mintCtx, proofs, mintUrl);
+              const action = decideMintSettlement(fullyPersisted, 'lightning');
 
-              // Complete the pending transaction (or create a new one if pending write failed).
-              if (pendingTxId && onTransactionCompleted) {
-                await onTransactionCompleted(pendingTxId, { amount: amt, memo: 'Lightning receive' });
+              if (action.type === 'complete') {
+                if (pendingTxId && onTransactionCompleted) {
+                  await onTransactionCompleted(pendingTxId, { amount: amt, memo: action.memo });
+                } else {
+                  await onTransactionCreated({
+                    type: 'mint', amount: amt, unit: mintUnit, mintUrl,
+                    status: 'completed', memo: action.memo,
+                  });
+                }
               } else {
-                await onTransactionCreated({
-                  type: 'mint', amount: amt, unit: mintUnit, mintUrl,
-                  status: 'completed', memo: 'Lightning receive',
-                });
+                console.warn(`[nutsd] Lightning receive: ${action.reason}`);
               }
 
               if (mountedRef.current) {
                 setLnReceivedAmount(amt);
                 setLnStep('done');
-                toastSuccess('Received!', `+${formatAmount(amt, mintUnit)}`);
+                toastSuccess('Received!', `+${formatAmount(amt, mintUnit)}${action.type === 'defer' ? ' (syncing…)' : ''}`);
               }
             } catch (err) {
               if (mountedRef.current) {
@@ -484,10 +507,19 @@ const ChannelsReceiveInner: React.FC<{
               setLnStep('error');
             }
           },
-          onIssued: () => {
+          onIssued: async () => {
+            // Tokens were already minted — another tab/session settled this
+            // invoice, or the background sweep did. Mark completed and show
+            // a success-like message rather than a scary error.
+            if (pendingTxId && onTransactionCompleted) {
+              await onTransactionCompleted(pendingTxId, {
+                memo: 'Lightning receive (settled in another session)',
+              });
+            }
             if (mountedRef.current) {
-              setLnError('These tokens were already minted (possibly in another session).');
-              setLnStep('error');
+              setLnReceivedAmount(amt);
+              setLnStep('done');
+              toastSuccess('Payment already received', 'Tokens were minted in another session.');
             }
           },
           isActive: () => mountedRef.current,
@@ -498,7 +530,16 @@ const ChannelsReceiveInner: React.FC<{
         })),
         expiry: quoteExpiry,
       });
+      stopPollingRef.current = () => {
+        unregisterActiveQuote(quoteId);
+        stopSubscription();
+      };
     } catch (err) {
+      // Clean up active-quote registration if we registered but didn't
+      // reach the stopPollingRef assignment (which owns the cleanup).
+      if (registeredQuoteId && !stopPollingRef.current) {
+        unregisterActiveQuote(registeredQuoteId);
+      }
       toastError('Failed to create invoice', err);
       setLnError(err instanceof Error ? err.message : String(err));
       setLnStep('error');
@@ -607,7 +648,7 @@ const ChannelsReceiveInner: React.FC<{
             </div>
             <div className="flex gap-2">
               <button
-                onClick={() => { setLnStep('amount'); setLnError(''); setLnInvoice(''); }}
+                onClick={() => { stopPollingRef.current?.(); stopPollingRef.current = undefined; setLnStep('amount'); setLnError(''); setLnInvoice(''); }}
                 className="flex-1 px-4 py-2.5 rounded-full border border-border text-sm font-medium hover:bg-muted"
               >
                 Try again
@@ -799,7 +840,7 @@ const ClaimTokenPane: React.FC<{
   p2pkPrivateKey?: string;
   onUnknownMint?: (mintUrl: string, amount: number, unit: string, token: string) => void;
   onClose: () => void;
-  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
+  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<boolean>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
 }> = ({
   mints,
@@ -908,7 +949,12 @@ const ClaimTokenPane: React.FC<{
       }
 
       const total = newProofs.reduce((s, p) => s + p.amount, 0);
-      await onProofsReceived(known.contextId, newProofs, mintUrl);
+      const fullyPersisted = await onProofsReceived(known.contextId, newProofs, mintUrl);
+
+      // Always record the transaction — the token is already spent at
+      // the mint regardless of local proof persistence status. On partial
+      // persistence the stash holds the proofs and startup recovery will
+      // write them. Without a tx record the receive would be invisible.
       await onTransactionCreated({
         type   : 'receive',
         amount : total,
@@ -917,9 +963,13 @@ const ClaimTokenPane: React.FC<{
         status : 'completed',
       });
 
+      if (!fullyPersisted) {
+        console.warn('[nutsd] Token claim: proof persistence partial, stash recovery will finish on restart');
+      }
+
       setReceivedAmount(total);
       setStep('done');
-      toastSuccess('Token received', `+${formatAmount(total, known.unit ?? 'sat')}`);
+      toastSuccess('Token received', `+${formatAmount(total, known.unit ?? 'sat')}${fullyPersisted ? '' : ' (syncing…)'}`);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
       setStep('error');
@@ -1064,7 +1114,7 @@ const LnurlWithdrawPane: React.FC<{
   mintHealth?: Map<string, boolean>;
   lnurl: string;
   onClose: () => void;
-  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
+  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<boolean>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
   onTransactionCompleted?: (txId: string, opts?: { amount?: number; memo?: string }) => Promise<void>;
 }> = ({ mints, mintHealth, lnurl, onClose, onProofsReceived, onTransactionCreated, onTransactionCompleted }) => {
@@ -1147,6 +1197,7 @@ const LnurlWithdrawPane: React.FC<{
     const mintUrl = selectedMint.url;
     const mintUnit = 'sat'; // LNURL-withdraw is always sats
     const mintCtx = selectedMint.contextId;
+    let registeredQuoteId: string | undefined;
 
     try {
       // Step 1: Create a mint quote (Lightning invoice) at our mint.
@@ -1164,11 +1215,18 @@ const LnurlWithdrawPane: React.FC<{
         quoteId, mintUrl, mintContextId: mintCtx,
         amount: amt, unit: mintUnit,
         expiry: quoteExpiry, source: 'lnurl-withdraw',
+        description: withdrawInfo.description || undefined,
       };
+      const lnurlExpiresAt = quoteExpiry
+        ? new Date(quoteExpiry * 1000).toISOString()
+        : undefined;
       const pendingTxId = await onTransactionCreated({
         type: 'mint', amount: amt, unit: mintUnit, mintUrl,
         status: 'pending',
         memo: serializePendingMintState(pendingState),
+        invoice: quote.request,
+        quoteId,
+        expiresAt: lnurlExpiresAt,
       });
 
       // Step 3: Submit the invoice to the LNURL-withdraw service.
@@ -1181,40 +1239,46 @@ const LnurlWithdrawPane: React.FC<{
       // Step 4: Wait for payment. The wallet lock is NOT held here —
       // only acquired briefly inside onPaid for the mint/store critical
       // section (same pattern as Lightning receive).
-      stopPollingRef.current = subscribeToQuote({
+      registerActiveQuote(quoteId);
+      registeredQuoteId = quoteId;
+      const stopLnurlSubscription = subscribeToQuote({
         mintUrl,
         quoteId,
         quoteType: 'bolt11_mint_quote',
         callbacks: {
           onPaid: async () => {
-            if (!mountedRef.current) return;
+            // Note: step is already 'waiting'. Do NOT bail on !mountedRef —
+            // proofs must be persisted even if the dialog was dismissed.
             let releaseLock: (() => void) | undefined;
             try {
               releaseLock = await acquireWalletLock('lnurl-withdraw-mint');
               const proofs = await mintTokens(mintUrl, amt, quoteId, mintUnit);
-              if (!mountedRef.current) return;
 
               if (!(await isDleqValid(mintUrl, proofs))) {
                 console.warn('[nutsd:financial] DLEQ verification failed on LNURL-withdraw proofs');
               }
 
-              await onProofsReceived(mintCtx, proofs, mintUrl);
+              // CRITICAL: persist proofs unconditionally (see Lightning onPaid comment).
+              const fullyPersisted = await onProofsReceived(mintCtx, proofs, mintUrl);
+              const action = decideMintSettlement(fullyPersisted, 'lnurl-withdraw', withdrawInfo.description);
 
-              // Complete the pending transaction.
-              const memo = `LNURL withdraw${withdrawInfo.description ? `: ${withdrawInfo.description}` : ''}`;
-              if (pendingTxId && onTransactionCompleted) {
-                await onTransactionCompleted(pendingTxId, { amount: amt, memo });
+              if (action.type === 'complete') {
+                if (pendingTxId && onTransactionCompleted) {
+                  await onTransactionCompleted(pendingTxId, { amount: amt, memo: action.memo });
+                } else {
+                  await onTransactionCreated({
+                    type: 'mint', amount: amt, unit: mintUnit, mintUrl,
+                    status: 'completed', memo: action.memo,
+                  });
+                }
               } else {
-                await onTransactionCreated({
-                  type: 'mint', amount: amt, unit: mintUnit, mintUrl,
-                  status: 'completed', memo,
-                });
+                console.warn(`[nutsd] LNURL withdraw: ${action.reason}`);
               }
 
               if (mountedRef.current) {
                 setReceivedAmount(amt);
                 setStep('done');
-                toastSuccess('Received!', `+${formatAmount(amt, mintUnit)}`);
+                toastSuccess('Received!', `+${formatAmount(amt, mintUnit)}${action.type === 'defer' ? ' (syncing…)' : ''}`);
               }
             } catch (err) {
               if (mountedRef.current) {
@@ -1231,10 +1295,16 @@ const LnurlWithdrawPane: React.FC<{
               setStep('error');
             }
           },
-          onIssued: () => {
+          onIssued: async () => {
+            if (pendingTxId && onTransactionCompleted) {
+              await onTransactionCompleted(pendingTxId, {
+                memo: 'LNURL withdraw (settled in another session)',
+              });
+            }
             if (mountedRef.current) {
-              setErrorMsg('These tokens were already minted (possibly in another session).');
-              setStep('error');
+              setReceivedAmount(amt);
+              setStep('done');
+              toastSuccess('Payment already received', 'Tokens were minted in another session.');
             }
           },
           isActive: () => mountedRef.current,
@@ -1245,9 +1315,18 @@ const LnurlWithdrawPane: React.FC<{
         })),
         expiry: quoteExpiry,
       });
+      stopPollingRef.current = () => {
+        unregisterActiveQuote(quoteId);
+        stopLnurlSubscription();
+      };
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : String(err));
-      setStep('error');
+      if (registeredQuoteId && !stopPollingRef.current) {
+        unregisterActiveQuote(registeredQuoteId);
+      }
+      if (mountedRef.current) {
+        setErrorMsg(err instanceof Error ? err.message : String(err));
+        setStep('error');
+      }
     }
   };
 

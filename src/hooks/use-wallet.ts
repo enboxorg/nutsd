@@ -41,6 +41,8 @@ import type { TransferData } from '@/protocol/cashu-transfer-protocol';
 import type { Proof } from '@cashu/cashu-ts';
 import {
   groupProofsByState,
+  checkMintQuote,
+  mintTokens,
   getKeysetInfos,
   getMintInfo,
   clearWalletCache,
@@ -48,10 +50,14 @@ import {
   type KeysetInfo,
 } from '@/cashu/wallet-ops';
 import { generateP2pkKeyPair, receiveP2pkLocked, type P2pkKeyPair } from '@/cashu/p2pk';
-import { recoverStashes, type RecoveryDeps } from '@/cashu/proof-stash-recovery';
+import { recoverStashes, type RecoveryDeps, type RecoveryResult } from '@/cashu/proof-stash-recovery';
 import { resumePendingSwap, type PendingSwapState } from '@/cashu/cross-mint-swap';
 import { resumePendingMint, parsePendingMintState } from '@/cashu/pending-mint-recovery';
-import { acquireWalletLock } from '@/lib/wallet-mutex';
+import { isDleqValid } from '@/cashu/dleq-verify';
+import { acquireWalletLock, tryAcquireWalletLock } from '@/lib/wallet-mutex';
+import { isQuoteActive } from '@/lib/active-quotes';
+import { decideSweepAction, handleIssuedQuote, handlePaidSettlement, type SweepDeps, type PaidSettlementDeps } from '@/lib/transaction-helpers';
+import { formatAmount, toastSuccess } from '@/lib/utils';
 
 // ---------------------------------------------------------------------------
 // Domain types — flattened from TypedRecord for the UI layer
@@ -113,6 +119,12 @@ export interface Transaction {
   senderDid?: string;
   memo?: string;
   createdAt: string;
+  /** BOLT-11 invoice for pending mint transactions. Cleared on completion. */
+  invoice?: string;
+  /** Mint quote ID for status checks. Cleared on completion. */
+  quoteId?: string;
+  /** ISO timestamp when the invoice expires. */
+  expiresAt?: string;
 }
 
 export interface WalletPreferences {
@@ -360,6 +372,9 @@ export function useWallet() {
           senderDid        : data.senderDid,
           memo             : data.memo,
           createdAt        : data.createdAt,
+          invoice          : data.invoice,
+          quoteId          : data.quoteId,
+          expiresAt        : data.expiresAt,
         } satisfies Transaction;
       }));
       // Sort newest first
@@ -586,6 +601,8 @@ export function useWallet() {
 
   // Proofs/keysets load after mints; startup recovery runs once proofs are loaded.
   const startupRecoveryDone = useRef(false);
+  /** True once startup recovery (stash replay, pending receives, etc.) has finished. */
+  const startupRecoveryComplete = useRef(false);
   const startupRecoveryRef = useRef<(freshProofs: StoredProof[]) => Promise<void>>(async () => {});
 
   useEffect(() => {
@@ -609,6 +626,8 @@ export function useWallet() {
           await startupRecoveryRef.current(freshProofs);
         } catch (err) {
           console.error('[nutsd] Startup recovery failed:', err);
+        } finally {
+          startupRecoveryComplete.current = true;
         }
       }
     })();
@@ -1317,9 +1336,12 @@ export function useWallet() {
    * that is tested in proof-stash-recovery.test.ts), wiring DWN access as
    * injected deps. This ensures the tested code IS the production code.
    */
-  /** @returns true if any proofs were recovered (caller should re-load proofs). */
-  const recoverProofStashes = useCallback(async (): Promise<boolean> => {
-    if (!repo) return false;
+  /**
+   * @returns The full RecoveryResult, or null if repo not ready.
+   * Callers that only need a boolean can check `result.proofsRecovered > 0`.
+   */
+  const recoverProofStashes = useCallback(async (): Promise<RecoveryResult | null> => {
+    if (!repo) return null;
 
     const deps: RecoveryDeps = {
       getStashes: async () => {
@@ -1379,7 +1401,7 @@ export function useWallet() {
         `${result.stashesCompleted}/${result.stashesFound} stashes completed`,
       );
     }
-    return result.proofsRecovered > 0;
+    return result;
   }, [repo, mints, addMint, addProof]);
 
   /**
@@ -1522,15 +1544,18 @@ export function useWallet() {
 
               if (fullyPersisted) {
                 const total = result.proofs.reduce((s, p) => s + p.amount, 0);
+                const sourceLabel = state.source === 'lnurl-withdraw'
+                  ? `LNURL withdraw${state.description ? `: ${state.description}` : ''}`
+                  : 'Lightning receive';
                 await record.update({
-                  data: { ...tx, status: 'completed', amount: total, memo: `Recovered ${state.source} receive` },
+                  data: { ...tx, status: 'completed', amount: total, memo: sourceLabel },
                 });
                 console.log(`[nutsd] Pending ${state.source} receive completed: ${total} ${state.unit}`);
                 recovered = true;
               }
               break;
             }
-            case 'issued':
+            case 'issued': {
               // ISSUED = tokens were already minted by a previous attempt.
               //
               // IMPORTANT: This does NOT guarantee the proofs are in the
@@ -1545,11 +1570,14 @@ export function useWallet() {
               // window and are lost. Keeping this pending would just hit
               // ISSUED forever with no recovery path — marking completed
               // (with a warning) is the honest outcome.
+              const issuedLabel = state.source === 'lnurl-withdraw'
+                ? `LNURL withdraw${state.description ? `: ${state.description}` : ''}`
+                : 'Lightning receive';
               await record.update({
                 data: {
                   ...tx,
                   status: 'completed',
-                  memo: 'Recovered (ISSUED — proofs may have been recovered via stash, or lost in pre-stash crash window)',
+                  memo: `${issuedLabel} (recovered — proofs may have been restored via stash)`,
                 },
               });
               console.warn(
@@ -1559,6 +1587,7 @@ export function useWallet() {
               );
               recovered = true;
               break;
+            }
             case 'expired':
               await record.update({ data: { ...tx, status: 'failed', memo: 'Quote expired before payment' } });
               console.log(`[nutsd] Pending receive expired: ${state.quoteId}`);
@@ -1586,12 +1615,13 @@ export function useWallet() {
   useEffect(() => {
     startupRecoveryRef.current = async (freshProofs: StoredProof[]) => {
       const stashResult = await recoverProofStashes();
+      const stashRecoveredProofs = stashResult != null && stashResult.proofsRecovered > 0;
       // Resume any pending cross-mint swaps (second leg).
       await resumePendingSwaps();
       // Resume any pending Lightning / LNURL-withdraw receives.
       const receiveResult = await resumePendingReceives();
       // If any recovery wrote new proofs, re-load.
-      const proofsForReconciliation = (stashResult || receiveResult)
+      const proofsForReconciliation = (stashRecoveredProofs || receiveResult)
         ? await refreshProofs()
         : freshProofs;
       await reconcilePendingProofs(proofsForReconciliation);
@@ -1624,6 +1654,9 @@ export function useWallet() {
       senderDid        : data.senderDid,
       memo             : data.memo,
       createdAt        : data.createdAt,
+      invoice          : data.invoice,
+      quoteId          : data.quoteId,
+      expiresAt        : data.expiresAt,
     };
     setTransactions(prev => [tx, ...prev]);
     return tx;
@@ -1650,6 +1683,9 @@ export function useWallet() {
             status: 'completed',
             amount: opts?.amount ?? data.amount,
             memo: opts?.memo ?? undefined,
+            // Clear pending invoice fields on completion
+            invoice: undefined,
+            quoteId: undefined,
           },
         });
         setTransactions(prev =>
@@ -1658,11 +1694,52 @@ export function useWallet() {
             status: 'completed' as const,
             amount: opts?.amount ?? t.amount,
             memo: opts?.memo ?? undefined,
+            invoice: undefined,
+            quoteId: undefined,
           } : t),
         );
       }
     } catch (err) {
       console.warn('[nutsd] Failed to complete transaction:', err);
+    }
+  }, [repo]);
+
+  /**
+   * Delete a transaction record from DWN and local state.
+   * Only allowed for expired pending invoices — callers should enforce policy.
+   */
+  const deleteTransaction = useCallback(async (txId: string) => {
+    if (!repo) throw new Error('Wallet not initialized');
+    const { records } = await repo.transaction.query();
+    const record = records.find((r: { id: string }) => r.id === txId);
+    if (!record) throw new Error('Transaction not found');
+    await record.delete();
+    setTransactions(prev => prev.filter(t => t.id !== txId));
+  }, [repo]);
+
+  /**
+   * Mark a pending transaction as failed (e.g. expired invoice).
+   * Preserves invoice and expiresAt so the expired-invoice UI can still
+   * show the expired badge and delete action.
+   */
+  const _markTransactionFailed = useCallback(async (txId: string, memo: string) => {
+    if (!repo) return;
+    try {
+      const { records } = await repo.transaction.query();
+      const record = records.find((r: { id: string }) => r.id === txId);
+      if (record) {
+        const data: TransactionData = await record.data.json();
+        await record.update({
+          data: { ...data, status: 'failed', memo, quoteId: undefined },
+        });
+        setTransactions(prev =>
+          prev.map(t => t.id === txId
+            ? { ...t, status: 'failed' as const, memo, quoteId: undefined }
+            : t),
+        );
+      }
+    } catch (err) {
+      console.warn('[nutsd] Failed to mark transaction failed:', err);
     }
   }, [repo]);
 
@@ -1731,6 +1808,139 @@ export function useWallet() {
 
     return () => { cancelled = true; clearInterval(timer); clearTimeout(initialTimer); };
   }, [repo, transactions, markTransactionClaimed]);
+
+  // =========================================================================
+  // Background pending-invoice sweep
+  // =========================================================================
+  // Periodically check if pending Lightning invoices have been paid. This
+  // covers the case where a user generates an invoice, closes the receive
+  // dialog, and the payer pays while the app is still open. Without this,
+  // settlement only happens on the next app restart.
+
+  useEffect(() => {
+    if (!repo || transactions.length === 0) return;
+    // Only sweep if there are active pending invoices
+    const pendingInvoices = transactions.filter(
+      tx => tx.type === 'mint' && tx.status === 'pending' && tx.quoteId && tx.memo,
+    );
+    if (pendingInvoices.length === 0) return;
+    let cancelled = false;
+    let sweepInFlight = false;
+
+    const sweep = async (): Promise<void> => {
+      if (sweepInFlight) return; // previous iteration still running
+      // Wait for startup recovery to finish before sweeping. Startup
+      // recovery runs recoverProofStashes() and resumePendingReceives()
+      // without the wallet lock — sweeping concurrently could duplicate
+      // proof writes via overlapping stash replay.
+      if (!startupRecoveryComplete.current) return;
+      sweepInFlight = true;
+      try {
+      for (const tx of pendingInvoices) {
+        if (cancelled) break;
+        // Skip expired invoices — no need to poll
+        if (tx.expiresAt && new Date(tx.expiresAt).getTime() < Date.now()) continue;
+
+        const state = parsePendingMintState(tx.memo!);
+        if (!state) continue;
+
+        // Skip if a dialog is actively monitoring this quote.
+        if (isQuoteActive(state.quoteId)) continue;
+
+        // ── Check phase (no lock, no mutation) ──
+        // Only a network round-trip to see the quote status. Does not
+        // block other wallet operations or trigger the unload guard.
+        let quoteState: string;
+        try {
+          const quote = await checkMintQuote(state.mintUrl, state.quoteId, state.unit);
+          quoteState = quote.state as string;
+        } catch {
+          continue; // mint may be offline — try next cycle
+        }
+        // Safe to bail here — no mutation happened yet (just a status check).
+        if (cancelled) break;
+
+        // Re-check: a dialog may have opened since the network call.
+        if (isQuoteActive(state.quoteId)) continue;
+
+        // ── Handle non-PAID states (no lock needed) ──
+        const source: 'lightning' | 'lnurl-withdraw' = state.source === 'lnurl-withdraw' ? 'lnurl-withdraw' : 'lightning';
+        const sweepAction = decideSweepAction(quoteState, source, state.expiry, state.description);
+
+        if (sweepAction.type === 'complete') {
+          // ISSUED — stash recovery writes proofs, so we need the wallet lock.
+          const issuedLock = tryAcquireWalletLock('invoice-sweep-issued');
+          if (!issuedLock) continue; // lock held — defer to next cycle
+          try {
+            const sweepDeps: SweepDeps = { recoverProofStashes, refreshProofs, completeTransaction };
+            const outcome = await handleIssuedQuote(tx.id, sweepAction, sweepDeps);
+            if (outcome.result === 'deferred') {
+              console.warn(`[nutsd] Background sweep: ${outcome.reason} for ${state.quoteId}`);
+            } else {
+              console.warn(`[nutsd] Background sweep: invoice ISSUED: ${state.quoteId}`);
+            }
+          } finally {
+            issuedLock();
+          }
+          continue;
+        }
+        if (sweepAction.type === 'markFailed') {
+          await _markTransactionFailed(tx.id, sweepAction.memo);
+          continue;
+        }
+        if (quoteState !== 'PAID') continue;
+
+        // ── Settlement phase (PAID — needs wallet lock) ──
+        // Use tryAcquire so we never block behind a dialog or other operation.
+        const releaseLock = tryAcquireWalletLock('invoice-sweep');
+        if (!releaseLock) continue; // lock held — dialog or other op will handle it
+
+        try {
+          // Final guard: re-check the active set after acquiring the lock.
+          if (isQuoteActive(state.quoteId)) continue;
+
+          const mint = mints.find(m => m.contextId === state.mintContextId)
+            ?? mints.find(m => m.url === state.mintUrl);
+          if (!mint) {
+            console.warn(`[nutsd] Background sweep: unknown mint ${state.mintUrl}`);
+            continue;
+          }
+
+          const paidDeps: PaidSettlementDeps = {
+            recoverProofStashes, refreshProofs, completeTransaction,
+            mintTokens, isDleqValid, safeStoreReceivedProofs,
+          };
+          const outcome = await handlePaidSettlement(tx.id, state, mint, paidDeps);
+          if (outcome.result === 'completed') {
+            toastSuccess('Payment received!', `+${formatAmount(outcome.total, mint.unit)}`);
+            console.log(`[nutsd] Background sweep settled ${state.source} invoice: ${outcome.total} ${mint.unit}`);
+          } else {
+            console.warn(`[nutsd] Background sweep: ${outcome.reason} for ${state.quoteId}`);
+          }
+        } catch (err) {
+          // mintTokens can return ISSUED if a race slipped through
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes('already issued') || msg.includes('ISSUED')) {
+            const issuedAction = decideSweepAction('ISSUED', source, state.expiry, state.description);
+            if (issuedAction.type === 'complete') {
+              const sweepDeps: SweepDeps = { recoverProofStashes, refreshProofs, completeTransaction };
+              await handleIssuedQuote(tx.id, issuedAction, sweepDeps);
+            }
+          }
+        } finally {
+          releaseLock();
+        }
+      }
+      } finally {
+        sweepInFlight = false;
+      }
+    };
+
+    const timer = setInterval(sweep, 15_000); // 15 seconds — invoices are time-sensitive
+    const initialTimer = setTimeout(sweep, 5_000);
+
+    return () => { cancelled = true; clearInterval(timer); clearTimeout(initialTimer); };
+  }, [repo, transactions, mints, safeStoreReceivedProofs, completeTransaction, _markTransactionFailed, recoverProofStashes, refreshProofs]);
 
   // =========================================================================
   // Incoming P2P transfers
@@ -1924,6 +2134,7 @@ export function useWallet() {
     // Transaction operations
     addTransaction,
     completeTransaction,
+    deleteTransaction,
     markTransactionClaimed,
     refreshTransactions,
 

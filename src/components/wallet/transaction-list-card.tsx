@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   ArrowUpIcon,
   ArrowDownIcon,
@@ -12,8 +12,12 @@ import {
   ClockIcon,
   Loader2Icon,
   RotateCcwIcon,
+  QrCodeIcon,
+  Trash2Icon,
+  AlertCircleIcon,
 } from 'lucide-react';
 import { formatAmount, formatDate, truncateMintUrl, toastSuccess, toastError } from '@/lib/utils';
+import { isUnfulfilledInvoice, isExpiredInvoice } from '@/lib/transaction-helpers';
 import type { Transaction } from '@/hooks/use-wallet';
 
 interface TransactionListCardProps {
@@ -21,6 +25,10 @@ interface TransactionListCardProps {
   onViewAll?: () => void;
   onCheckTokenSpent?: (tx: Transaction) => Promise<boolean | null>;
   onReclaimToken?: (tx: Transaction) => Promise<void>;
+  /** Show the QR code for a pending invoice. */
+  onShowInvoiceQr?: (tx: Transaction) => void;
+  /** Delete an expired pending invoice from history. */
+  onDeleteTransaction?: (tx: Transaction) => Promise<void>;
 }
 
 const TX_ICONS: Record<string, React.FC<{ className?: string }>> = {
@@ -53,17 +61,26 @@ const TX_COLORS: Record<string, string> = {
   'p2p-receive': 'text-[var(--color-info)]',
 };
 
-function TransactionRow({
+
+export function TransactionRow({
   tx,
   onCheckSpent,
   onReclaimToken,
+  onShowInvoiceQr,
+  onDeleteTransaction,
+  expanded,
 }: {
   tx: Transaction;
   onCheckSpent?: (tx: Transaction) => Promise<boolean | null>;
   onReclaimToken?: (tx: Transaction) => Promise<void>;
+  onShowInvoiceQr?: (tx: Transaction) => void;
+  onDeleteTransaction?: (tx: Transaction) => Promise<void>;
+  /** When true, action buttons are always visible and memo is shown (used in full history view). */
+  expanded?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const [reclaiming, setReclaiming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   // Derive initial spent state from the persisted claim status on the transaction.
   // Background sweep in use-wallet.ts updates tx.claimStatus to 'claimed' automatically.
   const initialSpentState: 'unknown' | 'checking' | 'pending' | 'spent' | 'reclaimed' =
@@ -81,6 +98,10 @@ function TransactionRow({
   const isIncoming = ['mint', 'receive', 'p2p-receive'].includes(tx.type);
   const sign = isIncoming ? '+' : '-';
   const hasCopyableToken = (tx.type === 'send' || tx.type === 'p2p-send') && !!tx.cashuToken;
+
+  // Unfulfilled invoice state (pending or failed-after-restart)
+  const unfulfilled = isUnfulfilledInvoice(tx);
+  const expired = isExpiredInvoice(tx);
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -128,15 +149,46 @@ function TransactionRow({
     }
   };
 
+  const handleShowQr = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onShowInvoiceQr?.(tx);
+  };
+
+  const handleDelete = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!onDeleteTransaction || deleting) return;
+    setDeleting(true);
+    try {
+      await onDeleteTransaction(tx);
+    } catch (err) {
+      console.warn('[nutsd] Transaction delete failed:', err);
+      toastError('Delete failed', err instanceof Error ? err : new Error('Failed to delete'));
+      setDeleting(false);
+    }
+  };
+
   return (
     <div className="flex items-center justify-between px-4 py-3 group">
       <div className="flex items-center gap-3 min-w-0">
-        <div className={`p-1.5 rounded-md bg-muted ${color}`}>
+        <div className={`p-1.5 rounded-md bg-muted ${unfulfilled && !expired ? 'text-[var(--color-warning)]' : unfulfilled && expired ? 'text-muted-foreground' : color}`}>
           <Icon className="h-3.5 w-3.5" />
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
             <span className="text-sm font-medium">{label}</span>
+            {/* Pending invoice badges */}
+            {unfulfilled && !expired && (
+              <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-[var(--color-warning)]/10 text-[var(--color-warning)] text-[10px] font-medium">
+                <ClockIcon className="h-2.5 w-2.5" />
+                awaiting payment
+              </span>
+            )}
+            {unfulfilled && expired && (
+              <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground text-[10px] font-medium">
+                <AlertCircleIcon className="h-2.5 w-2.5" />
+                expired
+              </span>
+            )}
             {/* Claim status badge — uses persisted claimStatus or manual check */}
             {(tx.type === 'send' || tx.type === 'p2p-send') && spentState === 'spent' && (
               <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-[var(--color-success)]/10 text-[var(--color-success)] text-[10px] font-medium">
@@ -157,6 +209,7 @@ function TransactionRow({
               </span>
             )}
           </div>
+          {expanded && tx.memo && !unfulfilled && <p className="text-xs text-muted-foreground truncate">{tx.memo}</p>}
           <div className="text-xs text-muted-foreground">
             {truncateMintUrl(tx.mintUrl)} &middot; {formatDate(tx.createdAt)}
           </div>
@@ -164,10 +217,38 @@ function TransactionRow({
       </div>
 
       <div className="flex items-center gap-1.5 shrink-0 ml-3">
+        {/* Action buttons for pending invoices — always visible (touch-friendly) */}
+        {unfulfilled && (
+          <div className="flex items-center gap-0.5">
+            {/* Show QR — only for active (non-expired) invoices */}
+            {!expired && onShowInvoiceQr && (
+              <button
+                onClick={handleShowQr}
+                className="p-1 rounded hover:bg-muted text-[var(--color-info)] hover:text-foreground transition-colors"
+                title="Show invoice QR"
+              >
+                <QrCodeIcon className="h-3 w-3" />
+              </button>
+            )}
+            {/* Delete — only for expired invoices */}
+            {expired && onDeleteTransaction && (
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                className="p-1 rounded hover:bg-muted text-destructive hover:text-destructive transition-colors disabled:opacity-50"
+                title="Delete expired invoice"
+              >
+                {deleting
+                  ? <Loader2Icon className="h-3 w-3 animate-spin" />
+                  : <Trash2Icon className="h-3 w-3" />
+                }
+              </button>
+            )}
+          </div>
+        )}
         {/* Action buttons for sent tokens */}
         {hasCopyableToken && (
-          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-            {/* Reclaim unclaimed token */}
+          <div className={`flex items-center gap-0.5 ${expanded ? '' : 'opacity-0 group-hover:opacity-100 transition-opacity'}`}>
             {onReclaimToken && spentState === 'pending' && (
               <button
                 onClick={handleReclaim}
@@ -181,7 +262,6 @@ function TransactionRow({
                 }
               </button>
             )}
-            {/* Check spent status */}
             {onCheckSpent && spentState !== 'spent' && spentState !== 'reclaimed' && (
               <button
                 onClick={handleCheckSpent}
@@ -194,7 +274,6 @@ function TransactionRow({
                 }
               </button>
             )}
-            {/* Copy token */}
             <button
               onClick={handleCopy}
               className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
@@ -207,7 +286,11 @@ function TransactionRow({
             </button>
           </div>
         )}
-        <div className={`amount-display text-sm font-medium ${isIncoming ? 'text-[var(--color-success)]' : 'text-foreground'}`}>
+        <div className={`amount-display text-sm font-medium ${
+          unfulfilled
+            ? (expired ? 'text-muted-foreground' : 'text-[var(--color-warning)]')
+            : (isIncoming ? 'text-[var(--color-success)]' : 'text-foreground')
+        }`}>
           {sign}{formatAmount(tx.amount, tx.unit)}
         </div>
       </div>
@@ -220,8 +303,26 @@ export const TransactionListCard: React.FC<TransactionListCardProps> = ({
   onViewAll,
   onCheckTokenSpent,
   onReclaimToken,
+  onShowInvoiceQr,
+  onDeleteTransaction,
 }) => {
   const recent = transactions.slice(0, 10);
+
+  // Schedule a re-render when the nearest pending invoice expires so the UI
+  // transitions from "awaiting payment" → "expired" without user interaction.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const now = Date.now();
+    const nextExpiry = recent.reduce<number | null>((earliest, tx) => {
+      if (!isUnfulfilledInvoice(tx) || !tx.expiresAt || tx.status === 'failed') return earliest;
+      const exp = new Date(tx.expiresAt).getTime();
+      if (exp <= now) return earliest; // already expired
+      return earliest === null ? exp : Math.min(earliest, exp);
+    }, null);
+    if (nextExpiry === null) return;
+    const timer = setTimeout(() => setTick(t => t + 1), nextExpiry - now + 500);
+    return () => clearTimeout(timer);
+  }, [recent]);
 
   return (
     <div className="rounded-xl bg-card border border-border overflow-hidden">
@@ -243,7 +344,7 @@ export const TransactionListCard: React.FC<TransactionListCardProps> = ({
             No transactions yet.
           </p>
           <p className="text-xs text-muted-foreground">
-            Tap <span className="font-medium text-foreground">Deposit</span> to add funds via Lightning, or <span className="font-medium text-foreground">Receive</span> to claim a Cashu token.
+            Tap <span className="font-medium text-foreground">Receive</span> to get started.
           </p>
         </div>
       ) : (
@@ -254,6 +355,8 @@ export const TransactionListCard: React.FC<TransactionListCardProps> = ({
               tx={tx}
               onCheckSpent={onCheckTokenSpent}
               onReclaimToken={onReclaimToken}
+              onShowInvoiceQr={onShowInvoiceQr}
+              onDeleteTransaction={onDeleteTransaction}
             />
           ))}
         </div>
