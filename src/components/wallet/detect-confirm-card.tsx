@@ -83,7 +83,7 @@ export interface SendContext {
   getUnspentProofs: (mintUrl: string) => StoredProof[];
   /** Used by payment-request matching which needs per-context proofs. */
   getUnspentProofsByContext: (contextId: string) => StoredProof[];
-  onNewProofs: (mintContextId: string, proofs: Proof[]) => Promise<void>;
+  onNewProofs: (mintContextId: string, proofs: Proof[]) => Promise<boolean>;
   onOldProofsSpent: (ids: string[]) => Promise<void>;
   onMarkPending: (ids: string[]) => Promise<void>;
   onRevertPending: (ids: string[]) => Promise<void>;

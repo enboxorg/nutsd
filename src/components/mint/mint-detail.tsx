@@ -29,7 +29,7 @@ interface MintDetailProps {
   onUpdateMint?: (id: string, updates: { name?: string }) => Promise<void>;
   /** Props for swap/consolidation dialog */
   getUnspentProofs?: (mintUrl: string) => StoredProof[];
-  onNewProofs?: (mintContextId: string, proofs: Proof[]) => Promise<void>;
+  onNewProofs?: (mintContextId: string, proofs: Proof[]) => Promise<boolean>;
   onOldProofsSpent?: (ids: string[]) => Promise<void>;
   onMarkPending?: (ids: string[]) => Promise<void>;
   onTransactionCreated?: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;

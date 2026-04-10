@@ -13,7 +13,7 @@ interface SwapConsolidateDialogProps {
   mint: Mint;
   getUnspentProofs: (mintUrl: string) => StoredProof[];
   onClose: () => void;
-  onNewProofs: (mintContextId: string, proofs: Proof[]) => Promise<void>;
+  onNewProofs: (mintContextId: string, proofs: Proof[]) => Promise<boolean>;
   onOldProofsSpent: (ids: string[]) => Promise<void>;
   onMarkPending: (ids: string[]) => Promise<void>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;

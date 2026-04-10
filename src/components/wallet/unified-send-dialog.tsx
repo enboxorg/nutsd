@@ -71,7 +71,7 @@ export interface UnifiedSendDialogProps {
   senderDid?: string;
   enbox: any;
   onClose: () => void;
-  onNewProofs: (mintContextId: string, proofs: Proof[]) => Promise<void>;
+  onNewProofs: (mintContextId: string, proofs: Proof[]) => Promise<boolean>;
   onOldProofsSpent: (ids: string[]) => Promise<void>;
   onMarkPending: (ids: string[]) => Promise<void>;
   onRevertPending: (ids: string[]) => Promise<void>;
