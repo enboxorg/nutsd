@@ -97,3 +97,89 @@ export function decideSweepAction(
 
   return { type: 'skip' };
 }
+
+// ---------------------------------------------------------------------------
+// Sweep handler functions (extracted for testability)
+// ---------------------------------------------------------------------------
+
+/** Dependencies injected into sweep handlers. */
+export interface SweepDeps {
+  recoverProofStashes: () => Promise<{ proofsRecovered: number; proofsFailed: number } | null>;
+  refreshProofs: () => Promise<unknown>;
+  completeTransaction: (txId: string, opts?: { amount?: number; memo?: string }) => Promise<void>;
+}
+
+/** Outcome of handleIssuedQuote. */
+export type IssuedOutcome =
+  | { result: 'completed'; memo: string }
+  | { result: 'deferred'; reason: string };
+
+/**
+ * Handle an ISSUED quote in the background sweep.
+ *
+ * Runs stash recovery first if the action requires it. Only completes the
+ * transaction if stash recovery had zero failed proof writes — otherwise
+ * defers to the next sweep cycle.
+ */
+export async function handleIssuedQuote(
+  txId: string,
+  action: SweepQuoteAction & { type: 'complete' },
+  deps: SweepDeps,
+): Promise<IssuedOutcome> {
+  if (action.needsStashRecovery) {
+    const stashResult = await deps.recoverProofStashes();
+    if (stashResult && stashResult.proofsRecovered > 0) {
+      await deps.refreshProofs();
+    }
+    if (stashResult && stashResult.proofsFailed > 0) {
+      return { result: 'deferred', reason: 'Stash recovery incomplete — proofs still missing' };
+    }
+  }
+  await deps.completeTransaction(txId, { memo: action.memo });
+  return { result: 'completed', memo: action.memo };
+}
+
+/** Outcome of handlePaidSettlement. */
+export type PaidOutcome =
+  | { result: 'completed'; total: number; memo: string }
+  | { result: 'deferred'; reason: string };
+
+/** Dependencies for the PAID settlement handler. */
+export interface PaidSettlementDeps extends SweepDeps {
+  mintTokens: (mintUrl: string, amount: number, quoteId: string, unit: string) => Promise<Array<{ amount: number; id: string; secret: string; C: string }>>;
+  isDleqValid: (mintUrl: string, proofs: Array<{ amount: number; id: string; secret: string; C: string }>) => Promise<boolean>;
+  safeStoreReceivedProofs: (contextId: string, mintUrl: string, unit: string, proofs: Array<{ amount: number; id: string; secret: string; C: string; state: 'unspent' }>) => Promise<boolean>;
+}
+
+/**
+ * Handle a PAID quote in the background sweep.
+ *
+ * Mints tokens, verifies DLEQ, persists proofs, and completes the
+ * transaction — but only if persistence fully succeeded.
+ */
+export async function handlePaidSettlement(
+  txId: string,
+  state: { mintUrl: string; amount: number; quoteId: string; unit: string; source: 'lightning' | 'lnurl-withdraw'; description?: string },
+  mint: { contextId: string; url: string; unit: string },
+  deps: PaidSettlementDeps,
+): Promise<PaidOutcome> {
+  const proofs = await deps.mintTokens(state.mintUrl, state.amount, state.quoteId, state.unit);
+
+  if (!(await deps.isDleqValid(state.mintUrl, proofs))) {
+    console.warn('[nutsd:financial] DLEQ verification failed on sweep-minted proofs');
+  }
+
+  const fullyPersisted = await deps.safeStoreReceivedProofs(
+    mint.contextId, mint.url, mint.unit,
+    proofs.map(p => ({ amount: p.amount, id: p.id, secret: p.secret, C: p.C, state: 'unspent' as const })),
+  );
+
+  const action = decideMintSettlement(fullyPersisted, state.source, state.description);
+  if (action.type === 'complete') {
+    const total = proofs.reduce((s, p) => s + p.amount, 0);
+    await deps.completeTransaction(txId, { amount: total, memo: action.memo });
+    await deps.refreshProofs();
+    return { result: 'completed', total, memo: action.memo };
+  }
+  return { result: 'deferred', reason: action.reason };
+}

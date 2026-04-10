@@ -56,7 +56,7 @@ import { resumePendingMint, parsePendingMintState } from '@/cashu/pending-mint-r
 import { isDleqValid } from '@/cashu/dleq-verify';
 import { acquireWalletLock, tryAcquireWalletLock } from '@/lib/wallet-mutex';
 import { isQuoteActive } from '@/lib/active-quotes';
-import { decideMintSettlement, decideSweepAction } from '@/lib/transaction-helpers';
+import { decideSweepAction, handleIssuedQuote, handlePaidSettlement, type SweepDeps, type PaidSettlementDeps } from '@/lib/transaction-helpers';
 import { formatAmount, toastSuccess } from '@/lib/utils';
 
 // ---------------------------------------------------------------------------
@@ -1848,20 +1848,13 @@ export function useWallet() {
         const sweepAction = decideSweepAction(quoteState, source, state.expiry, state.description);
 
         if (sweepAction.type === 'complete') {
-          // ISSUED — tokens already minted. Run stash recovery to ensure
-          // proofs are in the wallet before marking completed.
-          if (sweepAction.needsStashRecovery) {
-            const stashResult = await recoverProofStashes();
-            if (stashResult && stashResult.proofsRecovered > 0) await refreshProofs();
-            // Only complete if recovery had no failures. If proofs are
-            // still missing (failed writes), leave pending for next cycle.
-            if (stashResult && stashResult.proofsFailed > 0) {
-              console.warn(`[nutsd] Background sweep: stash recovery incomplete for ${state.quoteId}, deferring`);
-              continue;
-            }
+          const sweepDeps: SweepDeps = { recoverProofStashes, refreshProofs, completeTransaction };
+          const outcome = await handleIssuedQuote(tx.id, sweepAction, sweepDeps);
+          if (outcome.result === 'deferred') {
+            console.warn(`[nutsd] Background sweep: ${outcome.reason} for ${state.quoteId}`);
+          } else {
+            console.warn(`[nutsd] Background sweep: invoice ISSUED: ${state.quoteId}`);
           }
-          await completeTransaction(tx.id, { memo: sweepAction.memo });
-          console.warn(`[nutsd] Background sweep: invoice ISSUED: ${state.quoteId}`);
           continue;
         }
         if (sweepAction.type === 'markFailed') {
@@ -1886,42 +1879,25 @@ export function useWallet() {
             continue;
           }
 
-          const proofs = await mintTokens(state.mintUrl, state.amount, state.quoteId, state.unit);
-
-          // CRITICAL: once mintTokens succeeds, proofs MUST be persisted
-          // unconditionally — do NOT check `cancelled` here.
-
-          if (!(await isDleqValid(state.mintUrl, proofs))) {
-            console.warn('[nutsd:financial] DLEQ verification failed on sweep-minted proofs');
-          }
-
-          const fullyPersisted = await safeStoreReceivedProofs(
-            mint.contextId, mint.url, mint.unit,
-            proofs.map(p => ({
-              amount: p.amount, id: p.id, secret: p.secret, C: p.C, state: 'unspent' as const,
-            })),
-          );
-          const mintAction = decideMintSettlement(fullyPersisted, source, state.description);
-          if (mintAction.type === 'complete') {
-            const total = proofs.reduce((s, p) => s + p.amount, 0);
-            await completeTransaction(tx.id, { amount: total, memo: mintAction.memo });
-            await refreshProofs();
-            toastSuccess('Payment received!', `+${formatAmount(total, mint.unit)}`);
-            console.log(`[nutsd] Background sweep settled ${state.source} invoice: ${total} ${mint.unit}`);
+          const paidDeps: PaidSettlementDeps = {
+            recoverProofStashes, refreshProofs, completeTransaction,
+            mintTokens, isDleqValid, safeStoreReceivedProofs,
+          };
+          const outcome = await handlePaidSettlement(tx.id, state, mint, paidDeps);
+          if (outcome.result === 'completed') {
+            toastSuccess('Payment received!', `+${formatAmount(outcome.total, mint.unit)}`);
+            console.log(`[nutsd] Background sweep settled ${state.source} invoice: ${outcome.total} ${mint.unit}`);
           } else {
-            console.warn(`[nutsd] Background sweep: ${mintAction.reason} for ${state.quoteId}`);
+            console.warn(`[nutsd] Background sweep: ${outcome.reason} for ${state.quoteId}`);
           }
         } catch (err) {
           // mintTokens can return ISSUED if a race slipped through
           const msg = err instanceof Error ? err.message : String(err);
           if (msg.includes('already issued') || msg.includes('ISSUED')) {
-            const stashResult = await recoverProofStashes();
-            if (stashResult && stashResult.proofsRecovered > 0) await refreshProofs();
-            // Only complete if stash recovery had no failures
-            if (stashResult && stashResult.proofsFailed > 0) break; // defer to next cycle
             const issuedAction = decideSweepAction('ISSUED', source, state.expiry, state.description);
             if (issuedAction.type === 'complete') {
-              await completeTransaction(tx.id, { memo: issuedAction.memo });
+              const sweepDeps: SweepDeps = { recoverProofStashes, refreshProofs, completeTransaction };
+              await handleIssuedQuote(tx.id, issuedAction, sweepDeps);
             }
           }
         } finally {
