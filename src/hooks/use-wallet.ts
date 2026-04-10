@@ -601,6 +601,8 @@ export function useWallet() {
 
   // Proofs/keysets load after mints; startup recovery runs once proofs are loaded.
   const startupRecoveryDone = useRef(false);
+  /** True once startup recovery (stash replay, pending receives, etc.) has finished. */
+  const startupRecoveryComplete = useRef(false);
   const startupRecoveryRef = useRef<(freshProofs: StoredProof[]) => Promise<void>>(async () => {});
 
   useEffect(() => {
@@ -624,6 +626,8 @@ export function useWallet() {
           await startupRecoveryRef.current(freshProofs);
         } catch (err) {
           console.error('[nutsd] Startup recovery failed:', err);
+        } finally {
+          startupRecoveryComplete.current = true;
         }
       }
     })();
@@ -1825,6 +1829,11 @@ export function useWallet() {
 
     const sweep = async (): Promise<void> => {
       if (sweepInFlight) return; // previous iteration still running
+      // Wait for startup recovery to finish before sweeping. Startup
+      // recovery runs recoverProofStashes() and resumePendingReceives()
+      // without the wallet lock — sweeping concurrently could duplicate
+      // proof writes via overlapping stash replay.
+      if (!startupRecoveryComplete.current) return;
       sweepInFlight = true;
       try {
       for (const tx of pendingInvoices) {
