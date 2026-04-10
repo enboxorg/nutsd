@@ -120,7 +120,7 @@ export interface UnifiedReceiveDialogProps {
   onUnknownMint?: (mintUrl: string, amount: number, unit: string, token: string) => void;
 
   onClose: () => void;
-  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
+  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<boolean>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
   /** Update a pending transaction to completed (used for recovery-safe receive flows). */
   onTransactionCompleted?: (txId: string, opts?: { amount?: number; memo?: string }) => Promise<void>;
@@ -203,7 +203,7 @@ const ChannelsReceive: React.FC<{
   mintHealth?: Map<string, boolean>;
   did?: string;
   onClose: () => void;
-  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
+  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<boolean>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
   onTransactionCompleted?: (txId: string, opts?: { amount?: number; memo?: string }) => Promise<void>;
 }> = ({ mints, mintHealth, did, onClose, onProofsReceived, onTransactionCreated, onTransactionCompleted }) => {
@@ -293,7 +293,7 @@ const ChannelsReceiveInner: React.FC<{
   onCameraToggle: (active: boolean) => void;
   onScanOrPaste: (raw: string) => void;
   onClose: () => void;
-  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
+  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<boolean>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
   onTransactionCompleted?: (txId: string, opts?: { amount?: number; memo?: string }) => Promise<void>;
 }> = ({ mints, mintHealth, did, cameraActive, resolving, onCameraToggle, onScanOrPaste, onClose, onProofsReceived, onTransactionCreated, onTransactionCompleted }) => {
@@ -470,22 +470,33 @@ const ChannelsReceiveInner: React.FC<{
               // dialog unmounted while we awaited mintTokens/lock. Bailing
               // here would drop minted proofs (fund loss). The UI updates
               // below are guarded by mountedRef, but persistence is not.
-              await onProofsReceived(mintCtx, proofs, mintUrl);
+              const fullyPersisted = await onProofsReceived(mintCtx, proofs, mintUrl);
 
-              // Complete the pending transaction (or create a new one if pending write failed).
-              if (pendingTxId && onTransactionCompleted) {
-                await onTransactionCompleted(pendingTxId, { amount: amt, memo: 'Lightning receive' });
+              if (fullyPersisted) {
+                // Complete the pending transaction (or create a new one if pending write failed).
+                if (pendingTxId && onTransactionCompleted) {
+                  await onTransactionCompleted(pendingTxId, { amount: amt, memo: 'Lightning receive' });
+                } else {
+                  await onTransactionCreated({
+                    type: 'mint', amount: amt, unit: mintUnit, mintUrl,
+                    status: 'completed', memo: 'Lightning receive',
+                  });
+                }
+
+                if (mountedRef.current) {
+                  setLnReceivedAmount(amt);
+                  setLnStep('done');
+                  toastSuccess('Received!', `+${formatAmount(amt, mintUnit)}`);
+                }
               } else {
-                await onTransactionCreated({
-                  type: 'mint', amount: amt, unit: mintUnit, mintUrl,
-                  status: 'completed', memo: 'Lightning receive',
-                });
-              }
-
-              if (mountedRef.current) {
-                setLnReceivedAmount(amt);
-                setLnStep('done');
-                toastSuccess('Received!', `+${formatAmount(amt, mintUnit)}`);
+                // Proofs stashed but DWN write incomplete — leave tx pending
+                // so stash recovery on next startup can finish the job.
+                console.warn('[nutsd] Lightning receive: proof persistence partial, deferring completion');
+                if (mountedRef.current) {
+                  setLnReceivedAmount(amt);
+                  setLnStep('done');
+                  toastSuccess('Received!', `+${formatAmount(amt, mintUnit)} (syncing…)`);
+                }
               }
             } catch (err) {
               if (mountedRef.current) {
@@ -835,7 +846,7 @@ const ClaimTokenPane: React.FC<{
   p2pkPrivateKey?: string;
   onUnknownMint?: (mintUrl: string, amount: number, unit: string, token: string) => void;
   onClose: () => void;
-  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
+  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<boolean>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
 }> = ({
   mints,
@@ -1100,7 +1111,7 @@ const LnurlWithdrawPane: React.FC<{
   mintHealth?: Map<string, boolean>;
   lnurl: string;
   onClose: () => void;
-  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<void>;
+  onProofsReceived: (mintContextId: string, proofs: Proof[], mintUrl: string) => Promise<boolean>;
   onTransactionCreated: (data: Omit<TransactionData, 'createdAt'>) => Promise<string | undefined | void>;
   onTransactionCompleted?: (txId: string, opts?: { amount?: number; memo?: string }) => Promise<void>;
 }> = ({ mints, mintHealth, lnurl, onClose, onProofsReceived, onTransactionCreated, onTransactionCompleted }) => {
@@ -1244,23 +1255,32 @@ const LnurlWithdrawPane: React.FC<{
               }
 
               // CRITICAL: persist proofs unconditionally (see Lightning onPaid comment).
-              await onProofsReceived(mintCtx, proofs, mintUrl);
+              const fullyPersisted = await onProofsReceived(mintCtx, proofs, mintUrl);
 
-              // Complete the pending transaction.
-              const memo = `LNURL withdraw${withdrawInfo.description ? `: ${withdrawInfo.description}` : ''}`;
-              if (pendingTxId && onTransactionCompleted) {
-                await onTransactionCompleted(pendingTxId, { amount: amt, memo });
+              if (fullyPersisted) {
+                // Complete the pending transaction.
+                const memo = `LNURL withdraw${withdrawInfo.description ? `: ${withdrawInfo.description}` : ''}`;
+                if (pendingTxId && onTransactionCompleted) {
+                  await onTransactionCompleted(pendingTxId, { amount: amt, memo });
+                } else {
+                  await onTransactionCreated({
+                    type: 'mint', amount: amt, unit: mintUnit, mintUrl,
+                    status: 'completed', memo,
+                  });
+                }
+
+                if (mountedRef.current) {
+                  setReceivedAmount(amt);
+                  setStep('done');
+                  toastSuccess('Received!', `+${formatAmount(amt, mintUnit)}`);
+                }
               } else {
-                await onTransactionCreated({
-                  type: 'mint', amount: amt, unit: mintUnit, mintUrl,
-                  status: 'completed', memo,
-                });
-              }
-
-              if (mountedRef.current) {
-                setReceivedAmount(amt);
-                setStep('done');
-                toastSuccess('Received!', `+${formatAmount(amt, mintUnit)}`);
+                console.warn('[nutsd] LNURL withdraw: proof persistence partial, deferring completion');
+                if (mountedRef.current) {
+                  setReceivedAmount(amt);
+                  setStep('done');
+                  toastSuccess('Received!', `+${formatAmount(amt, mintUnit)} (syncing…)`);
+                }
               }
             } catch (err) {
               if (mountedRef.current) {

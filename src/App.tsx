@@ -223,7 +223,7 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
    * stash write and cleanup, `recoverProofStashes()` on next startup fills
    * in any missing proofs from the stash.
    */
-  const storeNewProofs = useCallback(async (mintContextId: string, cashuProofs: Proof[]) => {
+  const storeNewProofs = useCallback(async (mintContextId: string, cashuProofs: Proof[]): Promise<boolean> => {
     const mint = mints.find(m => m.contextId === mintContextId);
     const proofDataList: ProofData[] = cashuProofs.map(proof => {
       const data: ProofData = {
@@ -247,7 +247,7 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
       }
       return data;
     });
-    await safeStoreReceivedProofs(
+    return safeStoreReceivedProofs(
       mintContextId,
       mint?.url ?? '',
       mint?.unit ?? 'sat',
@@ -260,7 +260,7 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
     mintContextId: string,
     cashuProofs: Proof[],
     mintUrl: string,
-  ) => {
+  ): Promise<boolean> => {
     let ctx = mintContextId;
     if (!ctx) {
       const knownMint = mints.find(m => m.url === mintUrl);
@@ -272,7 +272,7 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
       }
     }
     if (!ctx) throw new Error(`Could not resolve mint context for ${mintUrl}`);
-    await storeNewProofs(ctx, cashuProofs);
+    return storeNewProofs(ctx, cashuProofs);
   }, [mints, addMint, storeNewProofs]);
 
   /**
