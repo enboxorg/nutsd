@@ -53,6 +53,7 @@ import { generateP2pkKeyPair, receiveP2pkLocked, type P2pkKeyPair } from '@/cash
 import { recoverStashes, type RecoveryDeps } from '@/cashu/proof-stash-recovery';
 import { resumePendingSwap, type PendingSwapState } from '@/cashu/cross-mint-swap';
 import { resumePendingMint, parsePendingMintState } from '@/cashu/pending-mint-recovery';
+import { isDleqValid } from '@/cashu/dleq-verify';
 import { acquireWalletLock, tryAcquireWalletLock } from '@/lib/wallet-mutex';
 import { isQuoteActive } from '@/lib/active-quotes';
 import { formatAmount, toastSuccess } from '@/lib/utils';
@@ -1831,6 +1832,7 @@ export function useWallet() {
         } catch {
           continue; // mint may be offline — try next cycle
         }
+        // Safe to bail here — no mutation happened yet (just a status check).
         if (cancelled) break;
 
         // Re-check: a dialog may have opened since the network call.
@@ -1869,7 +1871,16 @@ export function useWallet() {
           }
 
           const proofs = await mintTokens(state.mintUrl, state.amount, state.quoteId, state.unit);
-          if (cancelled) break;
+
+          // CRITICAL: once mintTokens succeeds, proofs MUST be persisted
+          // unconditionally — do NOT check `cancelled` here. Breaking out
+          // would drop the only copy of these proofs (fund loss). The same
+          // "persist unconditionally" rule applies here as in the dialog's
+          // onPaid callback.
+
+          if (!(await isDleqValid(state.mintUrl, proofs))) {
+            console.warn('[nutsd:financial] DLEQ verification failed on sweep-minted proofs');
+          }
 
           const fullyPersisted = await safeStoreReceivedProofs(
             mint.contextId, mint.url, mint.unit,

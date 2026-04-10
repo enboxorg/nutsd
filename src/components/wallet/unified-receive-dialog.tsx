@@ -642,7 +642,7 @@ const ChannelsReceiveInner: React.FC<{
             </div>
             <div className="flex gap-2">
               <button
-                onClick={() => { setLnStep('amount'); setLnError(''); setLnInvoice(''); }}
+                onClick={() => { stopPollingRef.current?.(); stopPollingRef.current = undefined; setLnStep('amount'); setLnError(''); setLnInvoice(''); }}
                 className="flex-1 px-4 py-2.5 rounded-full border border-border text-sm font-medium hover:bg-muted"
               >
                 Try again
