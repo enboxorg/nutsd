@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 
 import { ThemeProvider, useTheme } from '@/components/theme-provider';
 import { ErrorBoundary } from '@/components/error-boundary';
@@ -53,13 +53,27 @@ import {
 // Invoice QR dialog — for re-displaying a pending invoice from activity
 // ---------------------------------------------------------------------------
 
-function InvoiceQrDialog({ invoice, amount, unit, onClose }: {
+function InvoiceQrDialog({ invoice, amount, unit, expiresAt, onClose }: {
   invoice: string;
   amount: number;
   unit: string;
+  expiresAt?: string;
   onClose: () => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const [expired, setExpired] = useState(
+    () => !!expiresAt && new Date(expiresAt).getTime() < Date.now(),
+  );
+
+  // Auto-close when the invoice expires while the dialog is open.
+  useEffect(() => {
+    if (!expiresAt || expired) return;
+    const ms = new Date(expiresAt).getTime() - Date.now();
+    if (ms <= 0) { setExpired(true); return; }
+    const timer = setTimeout(() => setExpired(true), ms);
+    return () => clearTimeout(timer);
+  }, [expiresAt, expired]);
+
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(invoice);
@@ -74,26 +88,43 @@ function InvoiceQrDialog({ invoice, amount, unit, onClose }: {
     <DialogWrapper open={true} onClose={onClose}>
       <div className="space-y-4">
         <div className="flex items-center justify-between">
-          <h3 className="text-lg font-semibold">Pending Invoice</h3>
+          <h3 className="text-lg font-semibold">{expired ? 'Invoice Expired' : 'Pending Invoice'}</h3>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
             <XIcon className="h-4 w-4" />
           </button>
         </div>
-        <p className="text-xs text-muted-foreground text-center">
-          Waiting for <span className="font-medium text-foreground">{formatAmount(amount, unit)}</span> payment
-        </p>
-        <div className="flex justify-center">
-          <div className="p-4 rounded-2xl bg-white">
-            <QRCodeDisplay value={invoice} size={200} />
+        {expired ? (
+          <div className="flex flex-col items-center py-6 gap-3">
+            <AlertTriangleIcon className="h-10 w-10 text-muted-foreground" />
+            <p className="text-sm text-muted-foreground text-center">
+              This invoice has expired and can no longer be paid.
+            </p>
+            <button
+              onClick={onClose}
+              className="px-6 py-2.5 rounded-full bg-primary text-primary-foreground text-sm font-medium"
+            >
+              Close
+            </button>
           </div>
-        </div>
-        <button
-          onClick={handleCopy}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-full border border-border text-sm font-medium hover:bg-muted transition-colors"
-        >
-          {copied ? <CheckIcon className="h-4 w-4" /> : <CopyIcon className="h-4 w-4" />}
-          {copied ? 'Copied' : 'Copy Invoice'}
-        </button>
+        ) : (
+          <>
+            <p className="text-xs text-muted-foreground text-center">
+              Waiting for <span className="font-medium text-foreground">{formatAmount(amount, unit)}</span> payment
+            </p>
+            <div className="flex justify-center">
+              <div className="p-4 rounded-2xl bg-white">
+                <QRCodeDisplay value={invoice} size={200} />
+              </div>
+            </div>
+            <button
+              onClick={handleCopy}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-full border border-border text-sm font-medium hover:bg-muted transition-colors"
+            >
+              {copied ? <CheckIcon className="h-4 w-4" /> : <CopyIcon className="h-4 w-4" />}
+              {copied ? 'Copied' : 'Copy Invoice'}
+            </button>
+          </>
+        )}
       </div>
     </DialogWrapper>
   );
@@ -415,12 +446,11 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
   }, [deleteTransaction]);
 
   /** Show the QR code for a pending invoice. */
-  const [invoiceQrTx, setInvoiceQrTx] = useState<{ invoice: string; amount: number; unit: string } | null>(null);
+  const [invoiceQrTx, setInvoiceQrTx] = useState<{ invoice: string; amount: number; unit: string; expiresAt?: string } | null>(null);
   const handleShowInvoiceQr = useCallback((tx: Transaction) => {
-    // Guard: don't show QR for expired invoices
     if (!tx.invoice) return;
-    if (tx.expiresAt && new Date(tx.expiresAt).getTime() < Date.now()) return;
-    setInvoiceQrTx({ invoice: tx.invoice, amount: tx.amount, unit: tx.unit });
+    // Allow opening even if expired — the dialog itself shows the expired state.
+    setInvoiceQrTx({ invoice: tx.invoice, amount: tx.amount, unit: tx.unit, expiresAt: tx.expiresAt });
   }, []);
 
   // ── Unified dialog switchers ──
@@ -742,6 +772,7 @@ function WalletHome({ isPinEnabled, onSetPin, onRemovePin, onLock }: WalletHomeP
           invoice={invoiceQrTx.invoice}
           amount={invoiceQrTx.amount}
           unit={invoiceQrTx.unit}
+          expiresAt={invoiceQrTx.expiresAt}
           onClose={() => setInvoiceQrTx(null)}
         />
       )}

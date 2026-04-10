@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { XIcon, SearchIcon, FilterIcon } from 'lucide-react';
 import { truncateMintUrl } from '@/lib/utils';
-import { TransactionRow, isUnfulfilledInvoice } from '@/components/wallet/transaction-list-card';
+import { TransactionRow } from '@/components/wallet/transaction-list-card';
+import { isUnfulfilledInvoice } from '@/lib/transaction-helpers';
 import type { Transaction, Mint } from '@/hooks/use-wallet';
 
 interface TransactionHistoryProps {
