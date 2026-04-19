@@ -6,6 +6,7 @@ import { useEnbox } from '@/enbox';
 import { CashuWalletDefinition } from '@/protocol/cashu-wallet-protocol';
 import { CashuTransferDefinition } from '@/protocol/cashu-transfer-protocol';
 import { brand } from '@/lib/brand';
+import { toastError, toastSuccess } from '@/lib/utils';
 
 // Connect relay servers — must include /connect path segment.
 // WalletConnect.initClient appends /par, /authorize, /token to this base.
@@ -31,13 +32,12 @@ type QRPhase = 'generating' | 'waiting' | 'pin' | 'connecting' | 'error';
  * 1. Generates a connect URI -> renders as QR code
  * 2. Wallet scans QR -> creates delegate grants
  * 3. User enters PIN from wallet -> session established
- *
- * Designed for future extraction to @enbox/react.
  */
 export const QRConnectDialog: React.FC<QRConnectDialogProps> = ({ onBack, onClose }) => {
   const { auth, applySession } = useEnbox();
   const [phase, setPhase] = useState<QRPhase>('generating');
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
+  const [walletUri, setWalletUri] = useState<string>('');
   const [pin, setPin] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const pinResolveRef = useRef<((pin: string) => void) | null>(null);
@@ -45,7 +45,6 @@ export const QRConnectDialog: React.FC<QRConnectDialogProps> = ({ onBack, onClos
   const onBackRef = useRef(onBack);
   onBackRef.current = onBack;
 
-  // Start the wallet connect flow
   const startConnect = useCallback(async () => {
     if (!auth) {
       setErrorMessage('Auth not ready. Please try again.');
@@ -57,22 +56,19 @@ export const QRConnectDialog: React.FC<QRConnectDialogProps> = ({ onBack, onClos
     setPhase('generating');
 
     try {
-      // Build agent-level permission requests from the dapp protocol
-      // definitions using normalizeProtocolRequests, which handles
-      // the ProtocolDefinition -> ConnectPermissionRequest conversion
-      // including default scopes (read, write, delete, query, subscribe, configure).
       const permissionRequests = normalizeProtocolRequests(DAPP_PROTOCOLS);
 
       const session = await auth.walletConnect({
-        displayName        : brand.name,
-        connectServerUrl   : RELAY_SERVERS[0],
+        displayName: brand.name,
+        connectServerUrl: RELAY_SERVERS[0],
         permissionRequests,
-        onWalletUriReady   : async (uri: string) => {
+        onWalletUriReady: async (uri: string) => {
+          setWalletUri(uri);
           const dataUrl = await QRCode.toDataURL(uri, {
-            width                : 280,
-            margin               : 2,
-            color                : { dark: '#ffffff', light: '#00000000' },
-            errorCorrectionLevel : 'M',
+            width: 280,
+            margin: 2,
+            color: { dark: '#ffffff', light: '#00000000' },
+            errorCorrectionLevel: 'M',
           });
           setQrDataUrl(dataUrl);
           setPhase('waiting');
@@ -90,8 +86,6 @@ export const QRConnectDialog: React.FC<QRConnectDialogProps> = ({ onBack, onClos
     } catch (err) {
       if (!abortRef.current) {
         const msg = (err as Error).message || 'Connection failed.';
-        // If the wallet explicitly denied, go back to the connect modal
-        // instead of showing a scary error screen.
         if (msg.includes('denied by the wallet')) {
           onBackRef.current();
         } else {
@@ -104,7 +98,9 @@ export const QRConnectDialog: React.FC<QRConnectDialogProps> = ({ onBack, onClos
 
   useEffect(() => {
     startConnect();
-    return () => { abortRef.current = true; };
+    return () => {
+      abortRef.current = true;
+    };
   }, [startConnect]);
 
   const handlePinSubmit = () => {
@@ -115,9 +111,27 @@ export const QRConnectDialog: React.FC<QRConnectDialogProps> = ({ onBack, onClos
     }
   };
 
+  const handleOpenMobileWallet = async () => {
+    if (!walletUri) return;
+    try {
+      window.location.assign(walletUri);
+    } catch (error) {
+      toastError('Could not open mobile wallet', error);
+    }
+  };
+
+  const handleCopyLink = async () => {
+    if (!walletUri) return;
+    try {
+      await navigator.clipboard.writeText(walletUri);
+      toastSuccess('Connect link copied');
+    } catch (error) {
+      toastError('Could not copy connect link', error);
+    }
+  };
+
   return (
     <div className="p-6">
-      {/* Header with back button */}
       <div className="flex items-center gap-3 mb-5">
         <button
           onClick={() => { abortRef.current = true; onBack(); }}
@@ -128,7 +142,6 @@ export const QRConnectDialog: React.FC<QRConnectDialogProps> = ({ onBack, onClos
         <h2 className="text-lg font-semibold">Scan with Wallet</h2>
       </div>
 
-      {/* Generating QR */}
       {phase === 'generating' && (
         <div className="flex flex-col items-center py-12 gap-3">
           <Loader2Icon className="animate-spin h-8 w-8 text-primary" />
@@ -136,15 +149,28 @@ export const QRConnectDialog: React.FC<QRConnectDialogProps> = ({ onBack, onClos
         </div>
       )}
 
-      {/* QR code display */}
       {phase === 'waiting' && qrDataUrl && (
         <div className="flex flex-col items-center gap-4">
           <div className="bg-card border border-border rounded-xl p-3">
             <img src={qrDataUrl} alt="Connect QR code" className="w-56 h-56" />
           </div>
           <p className="text-sm text-muted-foreground text-center">
-            Scan this QR code with your Enbox wallet app
+            Scan this QR code with your Enbox mobile wallet, or open it on this device.
           </p>
+          <div className="flex flex-col gap-2 w-full">
+            <button
+              onClick={handleOpenMobileWallet}
+              className="w-full px-4 py-2 rounded-lg bg-primary text-primary-foreground font-medium text-sm hover:opacity-90 transition-opacity"
+            >
+              Open Enbox Mobile
+            </button>
+            <button
+              onClick={handleCopyLink}
+              className="w-full px-4 py-2 rounded-lg border border-border text-sm font-medium hover:bg-muted transition-colors"
+            >
+              Copy connect link
+            </button>
+          </div>
           <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
             <Loader2Icon className="animate-spin h-3 w-3" />
             Waiting for wallet...
@@ -152,7 +178,6 @@ export const QRConnectDialog: React.FC<QRConnectDialogProps> = ({ onBack, onClos
         </div>
       )}
 
-      {/* PIN input */}
       {phase === 'pin' && (
         <div className="flex flex-col items-center gap-4">
           <p className="text-sm text-muted-foreground text-center">
@@ -164,7 +189,11 @@ export const QRConnectDialog: React.FC<QRConnectDialogProps> = ({ onBack, onClos
             maxLength={4}
             value={pin}
             onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
-            onKeyDown={(e) => { if (e.key === 'Enter') { handlePinSubmit(); } }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                handlePinSubmit();
+              }
+            }}
             className="w-40 text-center text-3xl font-bold tracking-[0.5em] bg-muted border border-border rounded-xl py-3 px-4 text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
             autoFocus
             placeholder="----"
@@ -179,7 +208,6 @@ export const QRConnectDialog: React.FC<QRConnectDialogProps> = ({ onBack, onClos
         </div>
       )}
 
-      {/* Connecting */}
       {phase === 'connecting' && (
         <div className="flex flex-col items-center py-12 gap-3">
           <Loader2Icon className="animate-spin h-8 w-8 text-primary" />
@@ -187,12 +215,14 @@ export const QRConnectDialog: React.FC<QRConnectDialogProps> = ({ onBack, onClos
         </div>
       )}
 
-      {/* Error */}
       {phase === 'error' && (
         <div className="flex flex-col items-center gap-4 py-8">
           <p className="text-sm text-red-400 text-center">{errorMessage}</p>
           <button
-            onClick={() => { setPin(''); startConnect(); }}
+            onClick={() => {
+              setPin('');
+              startConnect();
+            }}
             className="px-4 py-2 rounded-lg border border-border text-sm font-medium hover:bg-muted transition-colors"
           >
             Try Again

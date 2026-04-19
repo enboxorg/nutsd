@@ -17,7 +17,7 @@ type ConnectState = 'init' | 'loading' | 'qr';
  * Presents three clear paths:
  * 1. Quick Start — create a local DID (primary CTA)
  * 2. Same Browser — open wallet selector / DWebConnect popup
- * 3. Scan QR — cross-device relay connect flow
+ * 3. Phone Wallet — cross-device or same-device native wallet flow
  *
  * Designed for future extraction to @enbox/react.
  */
@@ -137,7 +137,7 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({ open, onClose }) => 
                   <SmartphoneIcon className="h-5 w-5 text-primary" />
                   <div>
                     <div className="font-medium text-xs">Phone Wallet</div>
-                    <div className="text-[10px] text-muted-foreground mt-0.5">Scan QR code</div>
+                    <div className="text-[10px] text-muted-foreground mt-0.5">QR code or open app</div>
                   </div>
                 </button>
               </div>
