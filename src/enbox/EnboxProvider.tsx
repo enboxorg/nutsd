@@ -107,7 +107,7 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   );
 
   const applySession = useCallback((session: AuthSession) => {
-    const api = Enbox.connect({ session });
+    const api = Enbox.fromSession(session);
     setEnbox(api);
     setDid(session.did);
     setIsDelegateSession(!!session.delegateDid);
