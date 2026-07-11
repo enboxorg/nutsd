@@ -32,8 +32,7 @@
  * @module
  */
 
-import type { ProtocolDefinition } from '@enbox/dwn-sdk-js';
-import { defineProtocol } from '@enbox/browser';
+import { defineProtocol, type ProtocolDefinition } from '@enbox/browser';
 
 // ---------------------------------------------------------------------------
 // Data types

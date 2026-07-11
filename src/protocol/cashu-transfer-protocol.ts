@@ -31,8 +31,7 @@
  */
 
 import type { Proof } from '@cashu/cashu-ts';
-import type { ProtocolDefinition } from '@enbox/dwn-sdk-js';
-import { defineProtocol } from '@enbox/browser';
+import { defineProtocol, type ProtocolDefinition } from '@enbox/browser';
 import { isValidP2pkPublicKey } from '@/cashu/p2pk';
 import { isP2pkLockedProof, isP2pkLockedToken } from '@/cashu/token-utils';
 
