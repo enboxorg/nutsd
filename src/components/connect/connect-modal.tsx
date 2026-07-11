@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Loader2Icon, KeyRoundIcon, LinkIcon, SmartphoneIcon, XIcon } from 'lucide-react';
+import { Loader2Icon, LinkIcon, SmartphoneIcon, XIcon } from 'lucide-react';
 import { useEnbox } from '@/enbox';
 import { toastError } from '@/lib/utils';
 import { QRConnectDialog } from './qr-connect-dialog';
@@ -12,31 +12,19 @@ interface ConnectModalProps {
 type ConnectState = 'init' | 'loading' | 'qr';
 
 /**
- * Redesigned connect modal for nutsd.
+ * Connect modal for nutsd.
  *
- * Presents three clear paths:
- * 1. Quick Start — create a local DID (primary CTA)
- * 2. Same Browser — open wallet selector / DWebConnect popup
- * 3. Phone Wallet — cross-device or same-device native wallet flow
+ * Presents the two wallet connection methods:
+ * 1. Same Browser — open the standardized wallet selector popup
+ * 2. Phone Wallet — cross-device or same-device native wallet flow (QR)
  *
  * Designed for future extraction to @enbox/react.
  */
 export const ConnectModal: React.FC<ConnectModalProps> = ({ open, onClose }) => {
-  const { connectLocal, connectWallet } = useEnbox();
+  const { connectWallet } = useEnbox();
   const [state, setState] = useState<ConnectState>('init');
 
   if (!open) { return null; }
-
-  const handleQuickStart = async () => {
-    setState('loading');
-    try {
-      await connectLocal();
-      onClose();
-    } catch (error) {
-      toastError('Failed to create identity', error);
-      setState('init');
-    }
-  };
 
   const handleConnectWallet = async () => {
     setState('loading');
@@ -87,7 +75,7 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({ open, onClose }) => 
             <div className="p-6">
               {/* Header */}
               <div className="flex justify-between items-center mb-5">
-                <h2 className="text-lg font-semibold">Get Started</h2>
+                <h2 className="text-lg font-semibold">Connect a wallet</h2>
                 <button
                   onClick={onClose}
                   className="text-muted-foreground hover:text-foreground p-1 rounded-lg hover:bg-muted transition-colors"
@@ -96,28 +84,7 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({ open, onClose }) => 
                 </button>
               </div>
 
-              {/* Quick Start — primary CTA */}
-              <button
-                onClick={handleQuickStart}
-                className="w-full flex items-start gap-3 p-4 rounded-xl bg-primary text-primary-foreground hover:opacity-90 transition-opacity text-left mb-4"
-              >
-                <KeyRoundIcon className="h-5 w-5 mt-0.5 shrink-0" />
-                <div>
-                  <div className="font-medium text-sm">Quick Start</div>
-                  <div className="text-xs opacity-80 mt-0.5">
-                    Create a local identity with full self-custody on this device.
-                  </div>
-                </div>
-              </button>
-
-              {/* Separator */}
-              <div className="flex items-center gap-3 my-4">
-                <div className="flex-1 h-px bg-border" />
-                <span className="text-xs text-muted-foreground">or connect your wallet</span>
-                <div className="flex-1 h-px bg-border" />
-              </div>
-
-              {/* Secondary options */}
+              {/* Wallet connection methods */}
               <div className="grid grid-cols-2 gap-3">
                 <button
                   onClick={handleConnectWallet}
@@ -144,8 +111,8 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({ open, onClose }) => 
 
               {/* Footer hint */}
               <p className="mt-5 text-[10px] text-muted-foreground leading-relaxed text-center">
-                Quick Start creates a decentralized identity on this device.
-                You can connect a wallet later to sync across devices.
+                Connect an Enbox wallet in this browser or on your phone to sync
+                your identity across devices.
               </p>
             </div>
           )}
