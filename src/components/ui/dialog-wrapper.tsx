@@ -44,7 +44,7 @@ export const DialogWrapper: React.FC<DialogWrapperProps> = ({
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
         <Dialog.Content
-          className={`fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2 w-[calc(100%-2rem)] ${maxWidth} bg-card border border-border p-6 rounded-xl shadow-xl focus:outline-none`}
+          className={`fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2 w-[calc(100%-2rem)] ${maxWidth} max-h-[calc(100dvh-2rem)] overflow-y-auto bg-card border border-border p-6 rounded-xl shadow-xl focus:outline-none`}
           onPointerDownOutside={(e) => e.preventDefault()}
           onEscapeKeyDown={(e) => { if (preventClose) e.preventDefault(); }}
           aria-describedby={undefined}

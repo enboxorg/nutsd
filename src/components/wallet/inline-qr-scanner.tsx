@@ -22,7 +22,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CameraIcon, CameraOffIcon, Loader2Icon } from 'lucide-react';
 
-interface InlineQrScannerProps {
+export interface InlineQrScannerProps {
   /**
    * When true, the scanner attempts to request camera access and start
    * scanning. When false, the stream is torn down and the idle square is
@@ -35,6 +35,8 @@ interface InlineQrScannerProps {
   onScan: (value: string) => void;
   /** Optional: called if the scanner fails to start (permission denied, no camera). */
   onError?: (message: string) => void;
+  /** If true, the idle state is a compact button rather than a large square. */
+  compact?: boolean;
 }
 
 type ScanState = 'idle' | 'initializing' | 'scanning' | 'captured' | 'error';
@@ -44,6 +46,7 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
   onRequestStart,
   onScan,
   onError,
+  compact = false,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -159,8 +162,20 @@ export const InlineQrScanner: React.FC<InlineQrScannerProps> = ({
     };
   }, [active, handleDetected, stopCamera]);
 
-  // Idle state: the whole square is a big tappable button.
+  // Idle state: the whole square is a big tappable button, or a compact button if `compact` is true.
   if (state === 'idle') {
+    if (compact) {
+      return (
+        <button
+          type="button"
+          onClick={onRequestStart}
+          className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-2xl border-2 border-dashed border-border bg-muted/40 text-muted-foreground text-sm font-medium hover:text-foreground hover:border-primary/60 hover:bg-muted/70 transition-colors"
+        >
+          <CameraIcon className="h-4 w-4" />
+          Scan QR
+        </button>
+      );
+    }
     return (
       <button
         type="button"

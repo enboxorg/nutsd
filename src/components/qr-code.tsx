@@ -21,7 +21,15 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({
   useEffect(() => {
     if (!canvasRef.current || !value) return;
 
-    QRCode.toCanvas(canvasRef.current, value.toUpperCase(), {
+    const isLightning = value.toLowerCase().startsWith('lnbc') || 
+                        value.toLowerCase().startsWith('lightning:lnbc') || 
+                        value.toLowerCase().startsWith('lnurl');
+    
+    // Only uppercase bech32/lightning strings for QR efficiency.
+    // Base64 (Cashu) and DIDs MUST preserve case!
+    const qrText = isLightning ? value.toUpperCase() : value;
+
+    QRCode.toCanvas(canvasRef.current, qrText, {
       width: size,
       margin: 2,
       color: {

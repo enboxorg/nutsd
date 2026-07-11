@@ -709,6 +709,7 @@ const ChannelsReceiveInner: React.FC<{
                     onRequestStart={() => onCameraToggle(true)}
                     onScan={onScanOrPaste}
                     onError={(msg) => toastError('Scanner error', new Error(msg))}
+                    compact={true}
                   />
                   {!cameraActive && (
                     <ClipboardButton
@@ -768,7 +769,7 @@ const ChannelsReceiveInner: React.FC<{
                 unit={selectedMint?.unit ?? 'sat'}
                 optional={channel === 'cashu'}
                 disabled={channel === 'lightning' && (lnStep === 'invoice' || lnStep === 'waiting')}
-                autoFocus
+                autoFocus={false}
               />
             )}
 
@@ -1404,7 +1405,7 @@ const LnurlWithdrawPane: React.FC<{
               onChange={setAmount}
               unit="sat"
               max={withdrawInfo.maxSats}
-              autoFocus
+              autoFocus={false}
             />
 
             {withdrawInfo.minSats !== withdrawInfo.maxSats && (
