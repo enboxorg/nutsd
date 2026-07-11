@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { AlertTriangleIcon, ArrowRightIcon, Loader2Icon, XIcon, CheckCircleIcon } from 'lucide-react';
-import { DWebConnect, DEFAULT_WALLETS, showWalletSelector } from '@enbox/browser';
+import { BrowserConnectHandler, DEFAULT_WALLETS } from '@enbox/browser';
 import { useEnbox } from '@/enbox';
 import { toastError } from '@/lib/utils';
 import { CashuWalletDefinition } from '@/protocol/cashu-wallet-protocol';
@@ -43,37 +43,28 @@ export const ExportIdentityDialog: React.FC<ExportIdentityDialogProps> = ({ open
 
     setPhase('exporting');
     try {
-      // Step 1: Export the identity.
-      setStatusMessage('Exporting identity...');
-      const portable = await auth.exportIdentity(did);
-
-      // Step 2: Disconnect the local session (soft — no storage clear, no reload).
+      // Step 1: Disconnect the local session (soft — no storage clear, no reload).
       setStatusMessage('Preparing wallet connect...');
       await auth.disconnect();
 
-      // Step 3: Reconnect via wallet with the portable identity attached.
-      // We use auth.connect() with a per-call connectHandler that wraps
-      // DWebConnect.initClient() with the portableIdentity. This way the
-      // wallet receives the identity to import along with the permission
-      // requests.
+      // Step 2: Reconnect via wallet using the standard browser connect handler.
+      //
+      // NOTE (enbox 0.3.41 migration): the previous flow used the low-level
+      // `DWebConnect.initClient({ portableIdentity })` to hand this dapp's
+      // portable identity to the wallet for import. That low-level client was
+      // removed from the public `@enbox/browser` API, and the public connect
+      // options no longer accept a `portableIdentity`. This now performs a
+      // standard wallet-delegate connect via `BrowserConnectHandler` (which
+      // renders the wallet selector internally). Identity hand-off to the
+      // wallet must be re-introduced upstream if/when the SDK re-exposes it.
       setStatusMessage('Waiting for wallet approval...');
       const session = await auth.connect({
         protocols      : [CashuWalletDefinition, CashuTransferDefinition],
-        connectHandler : {
-          async requestAccess({ permissionRequests }) {
-            // Show the wallet selector modal.
-            const walletUrl = await showWalletSelector(DEFAULT_WALLETS);
-
-            // Run DWebConnect with portableIdentity included.
-            return DWebConnect.initClient({
-              walletUrl,
-              permissionRequests,
-              appName          : brand.name,
-              appIcon          : `${window.location.origin}/favicon.ico`,
-              portableIdentity : portable as any, // Type mismatch: PortableIdentity vs PortableDid — will be fixed in @enbox/browser
-            });
-          },
-        },
+        connectHandler : BrowserConnectHandler({
+          wallets : DEFAULT_WALLETS,
+          appName : brand.name,
+          appIcon : `${window.location.origin}/favicon.ico`,
+        }),
       });
 
       applySession(session);
