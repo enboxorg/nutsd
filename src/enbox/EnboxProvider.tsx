@@ -1,6 +1,6 @@
-import React, { createContext, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { createContext, useCallback, useEffect, useRef, useState } from 'react';
 
-import { AuthManager, BrowserConnectHandler, Enbox } from '@enbox/browser';
+import { AuthManager, BrowserConnectHandler, DEFAULT_WALLETS, Enbox } from '@enbox/browser';
 import type { AuthSession } from '@enbox/browser';
 import { CashuWalletDefinition } from '@/protocol/cashu-wallet-protocol';
 import { CashuTransferDefinition } from '@/protocol/cashu-transfer-protocol';
@@ -93,19 +93,6 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [isConnecting, setIsConnecting] = useState(false);
   const [recoveryPhrase, setRecoveryPhrase] = useState<string | undefined>();
 
-  const walletOptions = useMemo(
-    () => brand.preferredWalletUrl === 'https://blue-enbox-wallet.pages.dev/'
-      ? [
-          { name: 'Blue Enbox Wallet', url: 'https://blue-enbox-wallet.pages.dev', description: 'Your digital identity wallet' },
-          { name: 'Enbox Wallet', url: 'https://enbox-wallet.pages.dev', description: 'Your digital identity wallet' },
-        ]
-      : [
-          { name: 'Enbox Wallet', url: 'https://enbox-wallet.pages.dev', description: 'Your digital identity wallet' },
-          { name: 'Blue Enbox Wallet', url: 'https://blue-enbox-wallet.pages.dev', description: 'Your digital identity wallet' },
-        ],
-    [],
-  );
-
   const applySession = useCallback((session: AuthSession) => {
     const api = Enbox.fromSession(session);
     setEnbox(api);
@@ -140,7 +127,7 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             },
           },
           connectHandler : BrowserConnectHandler({
-            wallets : walletOptions,
+            wallets : DEFAULT_WALLETS,
             appName : brand.name,
             appIcon : `${window.location.origin}/favicon.ico`,
           }),
@@ -162,7 +149,7 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     init();
     return () => { cancelled = true; };
-  }, [applySession, walletOptions]);
+  }, [applySession]);
 
   // ── Connect local: create a new DID with full key material ──────
   // Creates a did:dht with Ed25519 (signing) + X25519 (encryption).
