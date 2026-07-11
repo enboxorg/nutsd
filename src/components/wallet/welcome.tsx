@@ -1,12 +1,27 @@
 import { useState } from 'react';
-import { ShieldIcon, RefreshCwIcon, ZapIcon } from 'lucide-react';
+import { Loader2Icon, ShieldIcon, RefreshCwIcon, ZapIcon } from 'lucide-react';
 import { useEnbox } from '@/enbox';
-import { ConnectModal } from '@/components/connect/connect-modal';
+import { toastError } from '@/lib/utils';
 import { brand } from '@/lib/brand';
 
 export const Welcome: React.FC = () => {
-  const { isConnecting } = useEnbox();
-  const [showConnect, setShowConnect] = useState(false);
+  const { isConnecting, connectWallet } = useEnbox();
+  const [connecting, setConnecting] = useState(false);
+
+  const handleConnect = async () => {
+    setConnecting(true);
+    try {
+      await connectWallet();
+    } catch (error) {
+      const msg = (error as Error).message || '';
+      // Denial / cancellation — swallow, no error toast.
+      if (!msg.includes('denied') && !msg.includes('cancelled')) {
+        toastError('Failed to connect wallet', error);
+      }
+    } finally {
+      setConnecting(false);
+    }
+  };
 
   return (
     <div className="flex-1 flex items-center justify-center bg-background p-8">
@@ -59,15 +74,15 @@ export const Welcome: React.FC = () => {
           </div>
         ) : (
           <button
-            onClick={() => setShowConnect(true)}
-            className="w-full px-6 py-3 rounded-full bg-primary text-primary-foreground font-medium text-sm hover:opacity-90 transition-opacity"
+            onClick={handleConnect}
+            disabled={connecting}
+            className="w-full flex items-center justify-center gap-2 px-6 py-3 rounded-full bg-primary text-primary-foreground font-medium text-sm hover:opacity-90 transition-opacity disabled:opacity-60"
           >
-            Get Started
+            {connecting && <Loader2Icon className="animate-spin h-4 w-4" />}
+            {connecting ? 'Connecting...' : 'Get Started'}
           </button>
         )}
       </div>
-
-      <ConnectModal open={showConnect} onClose={() => setShowConnect(false)} />
     </div>
   );
 };

@@ -61,9 +61,10 @@ export const ExportIdentityDialog: React.FC<ExportIdentityDialogProps> = ({ open
       const session = await auth.connect({
         protocols      : [CashuWalletDefinition, CashuTransferDefinition],
         connectHandler : BrowserConnectHandler({
-          wallets : DEFAULT_WALLETS,
-          appName : brand.name,
-          appIcon : `${window.location.origin}/favicon.ico`,
+          wallets          : DEFAULT_WALLETS,
+          appName          : brand.name,
+          appIcon          : `${window.location.origin}/favicon.ico`,
+          connectServerUrl : 'https://dev.aws.dwn.enbox.id/connect',
         }),
       });
 

@@ -127,9 +127,10 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             },
           },
           connectHandler : BrowserConnectHandler({
-            wallets : DEFAULT_WALLETS,
-            appName : brand.name,
-            appIcon : `${window.location.origin}/favicon.ico`,
+            wallets          : DEFAULT_WALLETS,
+            appName          : brand.name,
+            appIcon          : `${window.location.origin}/favicon.ico`,
+            connectServerUrl : 'https://dev.aws.dwn.enbox.id/connect',
           }),
         });
         if (cancelled) { return; }
