@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useEffect, useRef, useState } from 'react';
 
-import { AuthManager, BrowserConnectHandler, DEFAULT_WALLETS, Enbox } from '@enbox/browser';
+import { AuthManager, BrowserConnectHandler, DEFAULT_WALLETS, Enbox, isSessionExpiredError, isSessionInvalidError } from '@enbox/browser';
 import type { AuthSession } from '@enbox/browser';
 import { CashuWalletDefinition } from '@/protocol/cashu-wallet-protocol';
 import { CashuTransferDefinition } from '@/protocol/cashu-transfer-protocol';
@@ -87,6 +87,7 @@ export const EnboxContext = createContext<EnboxContextProps>({
 
 export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const authRef = useRef<AuthManager | null>(null);
+  const monitorStopRef = useRef<(() => void) | null>(null);
   const [enbox, setEnbox] = useState<Enbox | undefined>();
   const [did, setDid] = useState<string | undefined>();
   const [isDelegateSession, setIsDelegateSession] = useState(false);
@@ -103,6 +104,39 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, []);
 
+  // ── Disconnect ───────────────────────────────────────────────────
+  const disconnect = useCallback(async (options?: { clearStorage?: boolean }) => {
+    monitorStopRef.current?.();
+    monitorStopRef.current = null;
+
+    const auth = authRef.current;
+    if (!auth) { return; }
+
+    await auth.disconnect({ clearStorage: options?.clearStorage });
+    setEnbox(undefined);
+    setDid(undefined);
+    setRecoveryPhrase(undefined);
+
+    if (options?.clearStorage) {
+      window.location.reload();
+    }
+  }, []);
+
+  // ── Connection monitor: keep delegate grants fresh ───────────────
+  const startConnectionMonitor = useCallback((auth: AuthManager) => {
+    monitorStopRef.current?.();
+    monitorStopRef.current = auth.startConnectionMonitor({
+      autoRefresh: { protocols: DAPP_PROTOCOLS },
+      onError: (err) => {
+        if (isSessionExpiredError(err) || isSessionInvalidError(err)) {
+          void disconnect();
+        } else {
+          console.warn('[nutsd] connection refresh failed; will retry', err);
+        }
+      },
+    });
+  }, [disconnect]);
+
   // ── Bootstrap: create AuthManager once, then auto-restore ────────
   useEffect(() => {
     let cancelled = false;
@@ -110,7 +144,7 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     async function init() {
       setIsConnecting(true);
       try {
-        authRef.current = await AuthManager.create({
+        const auth = await AuthManager.create({
           password       : getOrCreateVaultPassword(),
           dwnEndpoints   : DWN_ENDPOINTS,
           registration   : {
@@ -133,13 +167,19 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             connectServerUrl : 'https://dev.aws.dwn.enbox.id/connect',
           }),
         });
+        authRef.current = auth;
         if (cancelled) { return; }
 
-        const session = await authRef.current.restoreSession();
+        const session = await auth.restoreSession();
         if (cancelled) { return; }
 
         if (session) {
           applySession(session);
+          // Only delegate (wallet-connected) sessions carry a delegateDid and
+          // need their grants kept fresh; vault sessions do not.
+          if (session.delegateDid) {
+            startConnectionMonitor(auth);
+          }
         }
       } catch (err) {
         console.error('[nutsd] Auth init failed:', err);
@@ -150,7 +190,10 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     init();
     return () => { cancelled = true; };
-  }, [applySession]);
+  }, [applySession, startConnectionMonitor]);
+
+  // ── Stop the connection monitor when the provider unmounts ───────
+  useEffect(() => () => { monitorStopRef.current?.(); }, []);
 
   // ── Connect local: create a new DID with full key material ──────
   // Creates a did:dht with Ed25519 (signing) + X25519 (encryption).
@@ -179,25 +222,11 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         protocols: DAPP_PROTOCOLS,
       });
       applySession(session);
+      startConnectionMonitor(auth);
     } finally {
       setIsConnecting(false);
     }
-  }, [applySession]);
-
-  // ── Disconnect ───────────────────────────────────────────────────
-  const disconnect = useCallback(async (options?: { clearStorage?: boolean }) => {
-    const auth = authRef.current;
-    if (!auth) { return; }
-
-    await auth.disconnect({ clearStorage: options?.clearStorage });
-    setEnbox(undefined);
-    setDid(undefined);
-    setRecoveryPhrase(undefined);
-
-    if (options?.clearStorage) {
-      window.location.reload();
-    }
-  }, []);
+  }, [applySession, startConnectionMonitor]);
 
   const clearRecoveryPhrase = useCallback(() => {
     setRecoveryPhrase(undefined);
